@@ -1,8 +1,15 @@
 # Virtual environment
 venv/
 
+# Environment file with credentials
+.env
+
 # Output data files
 pricing_data_*.csv
+
+# Checkpoint and discovery files
+.scrape_checkpoint.json
+discovered_urls.txt
 
 # Python
 __pycache__/
