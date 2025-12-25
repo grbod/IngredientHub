@@ -993,12 +993,15 @@ def fetch_products_page(token: str, page: int, page_size: int, in_stock_only: bo
     return data['data']['products']['items']
 
 
+_playwright_context = None
+
 def init_playwright_browser(email: str, password: str) -> bool:
     """
     Initialize Playwright browser and authenticate for inventory fallback.
+    Uses stealth options from original browser-based scraper.
     Returns True if authentication successful.
     """
-    global _playwright_browser, _playwright_page, _playwright_authenticated
+    global _playwright_browser, _playwright_page, _playwright_context, _playwright_authenticated
 
     if _playwright_authenticated and _playwright_page:
         return True
@@ -1008,87 +1011,160 @@ def init_playwright_browser(email: str, password: str) -> bool:
 
         print("  Initializing Playwright for inventory fallback...", flush=True)
         playwright = sync_playwright().start()
-        _playwright_browser = playwright.chromium.launch(headless=True)
-        _playwright_page = _playwright_browser.new_page()
-        _playwright_page.set_default_timeout(60000)  # 60 second timeout
 
-        # Navigate to login page
-        _playwright_page.goto(f"{BASE_URL}/customer/account/login/", timeout=60000)
-        _playwright_page.wait_for_load_state('domcontentloaded')
+        # Launch with headed mode (headless triggers bot detection on this site)
+        _playwright_browser = playwright.chromium.launch(
+            headless=False,  # Headed mode required - site detects headless
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+            ]
+        )
+
+        # Create context with realistic settings
+        _playwright_context = _playwright_browser.new_context(
+            viewport={'width': 1280, 'height': 800},
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='en-US',
+            timezone_id='America/New_York',
+        )
+
+        # Pre-set cookie consent to skip banner
+        _playwright_context.add_cookies([{
+            "name": "__hs_notify_banner_dismiss",
+            "value": "true",
+            "domain": ".ingredientsonline.com",
+            "path": "/"
+        }])
+
+        _playwright_page = _playwright_context.new_page()
+        _playwright_page.set_default_timeout(60000)
+
+        # Inject stealth JavaScript
+        _playwright_page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+
+        # Navigate to login page (correct URL from original scraper)
+        LOGIN_URL = f"{BASE_URL}/login"
+        print(f"  Navigating to {LOGIN_URL}", flush=True)
+        _playwright_page.goto(LOGIN_URL + "/", wait_until="domcontentloaded", timeout=60000)
         time.sleep(2)
 
-        # Try multiple selectors for email field
-        email_selectors = [
-            'input[name="login[username]"]',
-            '#email',
-            'input[type="email"]',
-            'input[name="email"]'
-        ]
-
+        # Fill email using getByLabel (preferred Playwright method)
         email_filled = False
-        for selector in email_selectors:
-            try:
-                if _playwright_page.locator(selector).count() > 0:
-                    _playwright_page.fill(selector, email)
-                    email_filled = True
-                    break
-            except:
-                continue
+        try:
+            email_input = _playwright_page.get_by_label("Email", exact=False)
+            if email_input.count() > 0:
+                email_input.click()
+                time.sleep(0.3)
+                email_input.fill(email)
+                email_filled = True
+                print("  Filled email field", flush=True)
+        except:
+            pass
+
+        if not email_filled:
+            # Fallback selectors
+            for selector in ['input[type="email"]', 'input[id="email"]', 'input[placeholder*="email" i]']:
+                try:
+                    loc = _playwright_page.locator(selector)
+                    if loc.count() > 0:
+                        loc.click()
+                        time.sleep(0.3)
+                        loc.fill(email)
+                        email_filled = True
+                        break
+                except:
+                    continue
 
         if not email_filled:
             print("  Could not find email field", flush=True)
             return False
 
-        # Try multiple selectors for password field
-        pass_selectors = [
-            'input[name="login[password]"]',
-            '#pass',
-            'input[type="password"]',
-            'input[name="password"]'
-        ]
+        time.sleep(0.5)
 
-        pass_filled = False
-        for selector in pass_selectors:
-            try:
-                if _playwright_page.locator(selector).count() > 0:
-                    _playwright_page.fill(selector, password)
-                    pass_filled = True
-                    break
-            except:
-                continue
+        # Fill password using getByLabel
+        password_filled = False
+        try:
+            password_input = _playwright_page.get_by_label("Password", exact=False)
+            if password_input.count() > 0:
+                password_input.click()
+                time.sleep(0.3)
+                password_input.fill(password)
+                password_filled = True
+                print("  Filled password field", flush=True)
+        except:
+            pass
 
-        if not pass_filled:
+        if not password_filled:
+            for selector in ['input[type="password"]', 'input[id="pass"]']:
+                try:
+                    loc = _playwright_page.locator(selector)
+                    if loc.count() > 0:
+                        loc.click()
+                        time.sleep(0.3)
+                        loc.fill(password)
+                        password_filled = True
+                        break
+                except:
+                    continue
+
+        if not password_filled:
             print("  Could not find password field", flush=True)
             return False
 
-        # Click submit button
+        time.sleep(0.5)
+
+        # Click submit button (button text is "Login" on this page)
+        submit_clicked = False
         submit_selectors = [
             'button[type="submit"]',
-            'button:has-text("Sign In")',
             'button:has-text("Login")',
-            '#send2'
+            'button:has-text("Sign In")',
         ]
-
         for selector in submit_selectors:
             try:
-                if _playwright_page.locator(selector).count() > 0:
-                    _playwright_page.click(selector)
+                loc = _playwright_page.locator(selector).first
+                if loc.is_visible():
+                    loc.click()
+                    submit_clicked = True
+                    print(f"  Clicked submit button ({selector})", flush=True)
                     break
-            except:
+            except Exception as e:
                 continue
+
+        if not submit_clicked:
+            print("  Warning: Could not find submit button", flush=True)
+            return False
 
         # Wait for login to complete
         _playwright_page.wait_for_load_state('domcontentloaded')
+        time.sleep(5)  # Give time for session cookies to be set
+
+        # Verify login by checking catalog page (like original scraper)
+        print("  Verifying login on catalog page...", flush=True)
+        _playwright_page.goto(f"{BASE_URL}/products/?in_stock[filter]=1,1&size=10",
+                              wait_until='domcontentloaded', timeout=30000)
         time.sleep(3)
 
-        # Check if logged in by looking for account indicator
         content = _playwright_page.content()
-        if "Hello" in content or "My Account" in content or "Sign Out" in content:
+        if 'log in to see pricing' in content.lower() or 'login to see pricing' in content.lower():
+            print("  ✗ Not logged in - seeing 'Log in to see pricing'", flush=True)
+            _playwright_authenticated = False
+            return False
+
+        # Also verify we can see prices
+        if '$' in content:
             _playwright_authenticated = True
             print("  Playwright authenticated successfully", flush=True)
             return True
         else:
-            print("  Playwright authentication may have failed", flush=True)
+            print("  Playwright authentication may have failed (no prices visible)", flush=True)
+            print(f"  Current URL: {_playwright_page.url}", flush=True)
             return False
 
     except Exception as e:
@@ -1107,59 +1183,77 @@ def scrape_inventory_from_html(product_url: str) -> List[Dict]:
         return []
 
     try:
-        _playwright_page.goto(product_url)
-        _playwright_page.wait_for_load_state('networkidle')
+        # Navigate and wait for page to load
+        _playwright_page.goto(product_url, timeout=30000, wait_until='domcontentloaded')
 
-        # Wait for inventory table to load (it's loaded dynamically)
-        time.sleep(2)
+        # Wait for inventory table to appear (it's loaded dynamically)
+        try:
+            _playwright_page.wait_for_selector('.inventory-table', timeout=10000)
+        except:
+            # Try waiting for WAREHOUSE text as fallback
+            try:
+                _playwright_page.wait_for_selector('text=WAREHOUSE', timeout=5000)
+            except:
+                time.sleep(3)
 
-        # Try to find the inventory table
+        # Get page content
         content = _playwright_page.content()
 
         inventory_list = []
 
-        # Parse inventory table: "WAREHOUSE    IN STOCK    NEW STOCK ETA"
-        # Look for pattern: Chino, CA | 125 | 6 weeks (or similar)
+        # Parse inventory table structure:
+        # <table class="inventory-table">
+        #   <tr><td><span>Chino, CA</span></td><td>125</td><td>6 weeks</td></tr>
+        #
+        # Pattern 1: Look for radio button values with quantity in next cells
+        # Pattern 2: Look for location names followed by table cells with numbers
 
-        # Find the inventory table section
-        inventory_match = re.search(
-            r'WAREHOUSE.*?IN\s*STOCK.*?(?:NEW\s*STOCK\s*)?ETA(.*?)(?:Add to Cart|Product Highlights|$)',
-            content, re.DOTALL | re.IGNORECASE
-        )
+        warehouse_patterns = [
+            (r'Chino,?\s*CA', 'chino'),
+            (r'Edison,?\s*NJ', 'nj'),
+            (r'Southwest', 'sw'),
+        ]
 
-        if inventory_match:
-            table_content = inventory_match.group(1)
+        for pattern, source_code in warehouse_patterns:
+            # Try Pattern 1: location followed by table-item cells
+            # e.g., <span>Chino, CA</span></label></td><td class="table-item">125</td><td class="table-item">6
+            match = re.search(
+                rf'{pattern}.*?</(?:span|label|td)>.*?(?:class="table-item"[^>]*>|<td[^>]*>)\s*(\d+)\s*</td>.*?(?:class="table-item"[^>]*>|<td[^>]*>)\s*([\d\-]+\s*weeks?|\d+|N/?A)?',
+                content, re.IGNORECASE | re.DOTALL
+            )
+            if match:
+                qty = int(match.group(1)) if match.group(1) else 0
+                leadtime_raw = match.group(2) if match.group(2) else ''
 
-            # Parse each warehouse row
-            # Pattern: location name, quantity, leadtime/eta
-            warehouse_patterns = [
-                (r'Chino,?\s*CA', 'chino'),
-                (r'Edison,?\s*NJ', 'nj'),
-                (r'Southwest', 'sw'),
-            ]
+                # Parse leadtime (e.g., "6 weeks" -> 6)
+                leadtime_match = re.search(r'(\d+)', leadtime_raw)
+                leadtime = int(leadtime_match.group(1)) if leadtime_match else 0
 
-            for pattern, source_code in warehouse_patterns:
-                # Look for: "Chino, CA" followed by a number (quantity)
-                match = re.search(
-                    rf'{pattern}[^0-9]*?(\d+)[^0-9]*?([\d\-]+\s*weeks?|[\d\-]+|N/?A)?',
-                    table_content, re.IGNORECASE
-                )
-                if match:
-                    qty = int(match.group(1)) if match.group(1) else 0
-                    leadtime_raw = match.group(2) if match.group(2) else ''
+                inventory_list.append({
+                    'source_code': source_code,
+                    'source_name': source_code,
+                    'quantity': qty,
+                    'leadtime': leadtime,
+                    'next_stocking': '',
+                    'backorder': 0
+                })
+                continue
 
-                    # Parse leadtime (e.g., "6 weeks" -> 6)
-                    leadtime_match = re.search(r'(\d+)', leadtime_raw)
-                    leadtime = int(leadtime_match.group(1)) if leadtime_match else 0
-
-                    inventory_list.append({
-                        'source_code': source_code,
-                        'source_name': source_code,
-                        'quantity': qty,
-                        'leadtime': leadtime,
-                        'next_stocking': '',
-                        'backorder': 0
-                    })
+            # Try Pattern 2: simpler pattern for location + number
+            match = re.search(
+                rf'{pattern}[^<]*</.*?(\d+)[^<]*</td>',
+                content, re.IGNORECASE | re.DOTALL
+            )
+            if match:
+                qty = int(match.group(1)) if match.group(1) else 0
+                inventory_list.append({
+                    'source_code': source_code,
+                    'source_name': source_code,
+                    'quantity': qty,
+                    'leadtime': 0,
+                    'next_stocking': '',
+                    'backorder': 0
+                })
 
         return inventory_list
 
@@ -1291,6 +1385,7 @@ def process_product(product: Dict) -> List[Dict]:
     inventory_data = get_inventory(product_sku, product_url)
 
     # Build inventory summary by warehouse
+    # API returns multiple entries per warehouse (one per variant) - keep the one with highest qty
     inventory_by_warehouse = {}
     for inv in inventory_data:
         source = inv.get('source_name') or inv.get('source_code') or 'Unknown'
@@ -1303,12 +1398,20 @@ def process_product(product: Dict) -> List[Dict]:
             qty_int = int(qty) if qty else 0
         except:
             qty_int = 0
-        if qty_int > 0 or leadtime or next_stock:
-            inventory_by_warehouse[source] = {
-                'quantity': qty,
-                'leadtime_weeks': leadtime,
-                'next_stocking': next_stock
-            }
+
+        # Check if this is meaningful data (non-zero qty or non-zero leadtime or valid ETA)
+        has_meaningful_leadtime = leadtime and leadtime not in ('0', '', None)
+        has_meaningful_eta = next_stock and next_stock not in ('0000-00-00', '', None)
+
+        if qty_int > 0 or has_meaningful_leadtime or has_meaningful_eta:
+            # Only update if new qty is higher (handles multiple variants per warehouse)
+            existing = inventory_by_warehouse.get(source)
+            if not existing or qty_int > int(existing.get('quantity', 0)):
+                inventory_by_warehouse[source] = {
+                    'quantity': qty,
+                    'leadtime_weeks': leadtime,
+                    'next_stocking': next_stock
+                }
 
     # Base row data with new parsed fields and IO business model constants
     base_row = {
