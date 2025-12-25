@@ -1589,6 +1589,8 @@ def main():
                         help='Resume from checkpoint if exists')
     parser.add_argument('--checkpoint-interval', type=int, default=CHECKPOINT_INTERVAL,
                         help=f'Products between checkpoints (default: {CHECKPOINT_INTERVAL})')
+    parser.add_argument('--no-playwright', action='store_true',
+                        help='Disable Playwright fallback (faster startup, API-only)')
     args = parser.parse_args()
 
     print("=" * 60)
@@ -1618,12 +1620,15 @@ def main():
     token = session.get_token()
     print("✓ Authentication successful")
 
-    # Initialize Playwright for inventory fallback (runs in background)
-    print("\nInitializing inventory fallback (Playwright)...")
-    if init_playwright_browser(email, password):
-        print("✓ Playwright ready for inventory fallback")
+    # Initialize Playwright for inventory fallback (optional)
+    if not args.no_playwright:
+        print("\nInitializing inventory fallback (Playwright)...")
+        if init_playwright_browser(email, password):
+            print("✓ Playwright ready for inventory fallback")
+        else:
+            print("⚠ Playwright fallback not available (API-only mode)")
     else:
-        print("⚠ Playwright fallback not available (API-only mode)")
+        print("\n⚡ Playwright disabled (--no-playwright), using API-only mode")
 
     # Get total product count
     print("\nFetching product count...")
