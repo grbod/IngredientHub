@@ -1395,7 +1395,8 @@ def process_product(product: Dict) -> List[Dict]:
         leadtime = inv.get('leadtime', '')
         next_stock = inv.get('next_stocking', '')
         try:
-            qty_int = int(qty) if qty else 0
+            # Use float() first to handle decimal quantities like "0.15"
+            qty_int = int(float(qty)) if qty else 0
         except:
             qty_int = 0
 
@@ -1406,7 +1407,8 @@ def process_product(product: Dict) -> List[Dict]:
         if qty_int > 0 or has_meaningful_leadtime or has_meaningful_eta:
             # Only update if new qty is higher (handles multiple variants per warehouse)
             existing = inventory_by_warehouse.get(source)
-            if not existing or qty_int > int(existing.get('quantity', 0)):
+            existing_qty = int(float(existing.get('quantity', 0))) if existing else 0
+            if not existing or qty_int > existing_qty:
                 inventory_by_warehouse[source] = {
                     'quantity': qty,
                     'leadtime_weeks': leadtime,
