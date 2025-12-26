@@ -95,6 +95,58 @@ def parse_category_from_url(url: str) -> str:
     return parts[0] if parts else ''
 
 
+def parse_packaging_kg(packaging: str) -> Optional[float]:
+    """
+    Parse packaging string to weight in kg.
+
+    Examples:
+        "25 kg Drum" → 25.0
+        "50 lb Bag" → 22.68
+        "100g Bottle" → 0.1
+        "1gal Jug" → 3.785
+        "(1,665 pieces) Carton" → None (not weight-based)
+    """
+    if not packaging:
+        return None
+
+    # Skip piece-count packaging like "(1,665 pieces) Carton"
+    if 'pieces' in packaging.lower():
+        return None
+
+    # Match patterns like "25 kg", "50lb", "100g", "1gal", "200L"
+    match = re.search(r'([\d.]+)\s*(kg|lb|g|oz|gal|l)\b', packaging, re.IGNORECASE)
+    if not match:
+        return None
+
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+
+    # Conversion factors to kg
+    conversions = {
+        'kg': 1.0,
+        'g': 0.001,
+        'lb': 0.453592,
+        'oz': 0.0283495,
+        'gal': 3.785,      # Approximate for water-based liquids
+        'l': 1.0,          # Approximate 1 kg per liter
+    }
+
+    return round(value * conversions.get(unit, 1.0), 4)
+
+
+def extract_variant_code(variant_sku: str) -> Optional[str]:
+    """
+    Extract variant/packaging code from variant SKU.
+
+    SKU format: [product_id]-[variant_code]-[attribute_id]-[manufacturer_id]
+    Example: "59410-100-10312-11455" → "100"
+    """
+    if not variant_sku:
+        return None
+    parts = variant_sku.split('-')
+    return parts[1] if len(parts) >= 2 else None
+
+
 # =============================================================================
 # Database Functions
 # =============================================================================
@@ -321,6 +373,54 @@ def init_database(db_path: str) -> sqlite3.Connection:
             ('Southwest', None),
         ]
     )
+
+    # Flat pricing table (mirrors CSV output for easy querying)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Pricing (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_name TEXT,
+            ingredient_name TEXT,
+            manufacturer TEXT,
+            category TEXT,
+            product_sku TEXT,
+            variant_sku TEXT,
+            variant_code TEXT,
+            variant_name TEXT,
+            packaging TEXT,
+            packaging_kg REAL,
+            tier_quantity INTEGER,
+            price REAL,
+            price_per_kg REAL,
+            original_price REAL,
+            discount_percent REAL,
+            price_type TEXT,
+            order_rule_type TEXT,
+            order_rule_base_qty INTEGER,
+            order_rule_unit TEXT,
+            shipping_responsibility TEXT,
+            shipping_terms TEXT,
+            url TEXT,
+            scraped_at TEXT,
+            currency TEXT,
+            inv_chino_qty TEXT,
+            inv_chino_leadtime TEXT,
+            inv_chino_eta TEXT,
+            inv_nj_qty TEXT,
+            inv_nj_leadtime TEXT,
+            inv_nj_eta TEXT,
+            inv_sw_qty TEXT,
+            inv_sw_leadtime TEXT,
+            inv_sw_eta TEXT
+        )
+    ''')
+
+    # Create VIEW for bulk items only (packaging >= 0.4 kg)
+    cursor.execute('DROP VIEW IF EXISTS bulk_pricing')
+    cursor.execute('''
+        CREATE VIEW bulk_pricing AS
+        SELECT * FROM Pricing
+        WHERE packaging_kg IS NULL OR packaging_kg >= 0.4
+    ''')
 
     conn.commit()
     return conn
@@ -967,6 +1067,10 @@ def fetch_products_page(token: str, page: int, page_size: int, in_stock_only: bo
                   discount { percent_off }
                 }
               }
+              attributes {
+                code
+                label
+              }
             }
           }
           ... on SimpleProduct {
@@ -1367,6 +1471,7 @@ def process_product(product: Dict) -> List[Dict]:
     """
     Process a single product and return rows for CSV.
     One row per price tier per variant.
+    Inventory is tracked per-variant, not aggregated.
     """
     rows = []
     timestamp = datetime.now().isoformat()
@@ -1384,38 +1489,37 @@ def process_product(product: Dict) -> List[Dict]:
     # Fetch inventory for this product (with HTML fallback if API fails)
     inventory_data = get_inventory(product_sku, product_url)
 
-    # Build inventory summary by warehouse
-    # API returns multiple entries per warehouse (one per variant) - keep the one with highest qty
-    inventory_by_warehouse = {}
+    # Build inventory by VARIANT SKU, then by warehouse
+    # Structure: {variant_sku: {warehouse: {quantity, leadtime, next_stocking}}}
+    inventory_by_variant = {}
     for inv in inventory_data:
+        inv_sku = inv.get('sku', '')
         source = inv.get('source_name') or inv.get('source_code') or 'Unknown'
-        if not source:
+        if not source or not inv_sku:
             continue
+
         qty = inv.get('quantity', 0)
         leadtime = inv.get('leadtime', '')
         next_stock = inv.get('next_stocking', '')
+
         try:
-            # Use float() first to handle decimal quantities like "0.15"
-            qty_int = int(float(qty)) if qty else 0
+            qty_float = float(qty) if qty else 0
         except:
-            qty_int = 0
+            qty_float = 0
 
-        # Check if this is meaningful data (non-zero qty or non-zero leadtime or valid ETA)
-        has_meaningful_leadtime = leadtime and leadtime not in ('0', '', None)
-        has_meaningful_eta = next_stock and next_stock not in ('0000-00-00', '', None)
+        # Initialize variant dict if needed
+        if inv_sku not in inventory_by_variant:
+            inventory_by_variant[inv_sku] = {}
 
-        if qty_int > 0 or has_meaningful_leadtime or has_meaningful_eta:
-            # Only update if new qty is higher (handles multiple variants per warehouse)
-            existing = inventory_by_warehouse.get(source)
-            existing_qty = int(float(existing.get('quantity', 0))) if existing else 0
-            if not existing or qty_int > existing_qty:
-                inventory_by_warehouse[source] = {
-                    'quantity': qty,
-                    'leadtime_weeks': leadtime,
-                    'next_stocking': next_stock
-                }
+        # Store inventory for this variant at this warehouse
+        inventory_by_variant[inv_sku][source] = {
+            'quantity': qty,
+            'quantity_float': qty_float,
+            'leadtime_weeks': leadtime,
+            'next_stocking': next_stock
+        }
 
-    # Base row data with new parsed fields and IO business model constants
+    # Base row data with parsed fields and IO business model constants
     base_row = {
         'product_name': product_name,
         'ingredient_name': ingredient_name,
@@ -1428,19 +1532,18 @@ def process_product(product: Dict) -> List[Dict]:
         'order_rule_type': IO_BUSINESS_MODEL['order_rule_type'],
         'order_rule_base_qty': IO_BUSINESS_MODEL['order_rule_base_qty'],
         'order_rule_unit': IO_BUSINESS_MODEL['order_rule_unit'],
-        'packaging_size': IO_BUSINESS_MODEL['packaging_size'],
-        'packaging_unit': IO_BUSINESS_MODEL['packaging_unit'],
-        'packaging_description': IO_BUSINESS_MODEL['packaging_description'],
         'shipping_responsibility': IO_BUSINESS_MODEL['shipping_responsibility'],
         'shipping_terms': IO_BUSINESS_MODEL['shipping_terms'],
     }
 
-    # Add inventory columns
-    for warehouse, inv_info in inventory_by_warehouse.items():
-        safe_name = warehouse.replace(' ', '_').replace(',', '')
-        base_row[f'inv_{safe_name}_qty'] = inv_info['quantity']
-        base_row[f'inv_{safe_name}_leadtime'] = inv_info['leadtime_weeks']
-        base_row[f'inv_{safe_name}_eta'] = inv_info['next_stocking']
+    def add_variant_inventory(row: Dict, variant_sku: str):
+        """Add per-variant inventory columns to a row."""
+        variant_inv = inventory_by_variant.get(variant_sku, {})
+        for warehouse, inv_info in variant_inv.items():
+            safe_name = warehouse.replace(' ', '_').replace(',', '')
+            row[f'inv_{safe_name}_qty'] = inv_info['quantity']
+            row[f'inv_{safe_name}_leadtime'] = inv_info['leadtime_weeks']
+            row[f'inv_{safe_name}_eta'] = inv_info['next_stocking']
 
     # Handle ConfigurableProduct (has variants)
     if product_type == 'ConfigurableProduct':
@@ -1454,6 +1557,12 @@ def process_product(product: Dict) -> List[Dict]:
             variant_name = variant_product.get('name', product_name)
             price_tiers = variant_product.get('price_tiers', [])
 
+            # Extract packaging from variant attributes
+            variant_attrs = variant.get('attributes', [])
+            packaging = variant_attrs[0].get('label', '') if variant_attrs else ''
+            packaging_kg = parse_packaging_kg(packaging)
+            variant_code = extract_variant_code(variant_sku)
+
             if price_tiers:
                 # Use tiered pricing
                 for tier in price_tiers:
@@ -1462,6 +1571,9 @@ def process_product(product: Dict) -> List[Dict]:
                     row.update({
                         'variant_sku': variant_sku,
                         'variant_name': variant_name,
+                        'variant_code': variant_code,
+                        'packaging': packaging,
+                        'packaging_kg': packaging_kg,
                         'tier_quantity': tier.get('quantity', 0),
                         'price': price_val,
                         'price_per_kg': price_val,  # IO already quotes in $/kg
@@ -1469,6 +1581,7 @@ def process_product(product: Dict) -> List[Dict]:
                         'discount_percent': tier.get('discount', {}).get('percent_off', 0),
                         'price_type': 'tiered',
                     })
+                    add_variant_inventory(row, variant_sku)
                     rows.append(row)
             else:
                 # Fallback to price_range for flat-rate sale pricing
@@ -1481,6 +1594,9 @@ def process_product(product: Dict) -> List[Dict]:
                     row.update({
                         'variant_sku': variant_sku,
                         'variant_name': variant_name,
+                        'variant_code': variant_code,
+                        'packaging': packaging,
+                        'packaging_kg': packaging_kg,
                         'tier_quantity': 1,
                         'price': final_price,
                         'price_per_kg': final_price,  # IO already quotes in $/kg
@@ -1489,11 +1605,17 @@ def process_product(product: Dict) -> List[Dict]:
                         'discount_percent': min_price.get('discount', {}).get('percent_off', 0),
                         'price_type': 'flat_rate',
                     })
+                    add_variant_inventory(row, variant_sku)
                     rows.append(row)
 
     # Handle SimpleProduct (no variants)
     elif product_type == 'SimpleProduct':
         price_tiers = product.get('price_tiers', [])
+        variant_code = extract_variant_code(product_sku)
+
+        # SimpleProduct doesn't have variant attributes, default to 25kg Drum
+        packaging = '25 kg Drum'
+        packaging_kg = 25.0
 
         if price_tiers:
             # Use tiered pricing
@@ -1503,6 +1625,9 @@ def process_product(product: Dict) -> List[Dict]:
                 row.update({
                     'variant_sku': product_sku,
                     'variant_name': product_name,
+                    'variant_code': variant_code,
+                    'packaging': packaging,
+                    'packaging_kg': packaging_kg,
                     'tier_quantity': tier.get('quantity', 0),
                     'price': price_val,
                     'price_per_kg': price_val,  # IO already quotes in $/kg
@@ -1510,6 +1635,7 @@ def process_product(product: Dict) -> List[Dict]:
                     'discount_percent': tier.get('discount', {}).get('percent_off', 0),
                     'price_type': 'tiered',
                 })
+                add_variant_inventory(row, product_sku)
                 rows.append(row)
         else:
             # Fallback to price_range for flat-rate sale pricing
@@ -1522,6 +1648,9 @@ def process_product(product: Dict) -> List[Dict]:
                 row.update({
                     'variant_sku': product_sku,
                     'variant_name': product_name,
+                    'variant_code': variant_code,
+                    'packaging': packaging,
+                    'packaging_kg': packaging_kg,
                     'tier_quantity': 1,
                     'price': final_price,
                     'price_per_kg': final_price,  # IO already quotes in $/kg
@@ -1530,6 +1659,7 @@ def process_product(product: Dict) -> List[Dict]:
                     'discount_percent': min_price.get('discount', {}).get('percent_off', 0),
                     'price_type': 'flat_rate',
                 })
+                add_variant_inventory(row, product_sku)
                 rows.append(row)
 
     return rows
@@ -1550,12 +1680,13 @@ def save_to_csv(data: List[Dict], output_dir: str = ".", output_file: str = None
     # Reorder columns per scraper-specifications.md
     priority_cols = [
         'product_name', 'ingredient_name', 'manufacturer', 'category',
-        'product_sku', 'variant_sku', 'tier_quantity', 'price', 'price_per_kg',
+        'product_sku', 'variant_sku', 'variant_code', 'variant_name',
+        'packaging', 'packaging_kg',
+        'tier_quantity', 'price', 'price_per_kg',
         'original_price', 'discount_percent', 'price_type',
         'order_rule_type', 'order_rule_base_qty', 'order_rule_unit',
-        'packaging_size', 'packaging_unit', 'packaging_description',
         'shipping_responsibility', 'shipping_terms',
-        'url', 'scraped_at'
+        'url', 'scraped_at', 'currency'
     ]
     other_cols = [c for c in df.columns if c not in priority_cols]
     ordered_cols = [c for c in priority_cols if c in df.columns] + other_cols
