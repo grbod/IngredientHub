@@ -147,6 +147,71 @@ def extract_variant_code(variant_sku: str) -> Optional[str]:
     return parts[1] if len(parts) >= 2 else None
 
 
+def format_product_details(rows: List[Dict], verbose: bool = True) -> str:
+    """
+    Format product details as a table for console output.
+
+    Shows each variant with all price tiers and inventory.
+    """
+    if not rows or not verbose:
+        return ""
+
+    lines = []
+
+    # Table header
+    lines.append(f"    {'Packaging':<16} {'Tier':>8} {'$/kg':>10} {'Inventory':<30}")
+    lines.append(f"    {'-'*16} {'-'*8} {'-'*10} {'-'*30}")
+
+    # Group rows by variant
+    variants = {}
+    for row in rows:
+        variant_sku = row.get('variant_sku', '')
+        if variant_sku not in variants:
+            variants[variant_sku] = []
+        variants[variant_sku].append(row)
+
+    for variant_sku, variant_rows in variants.items():
+        first_row = variant_rows[0]
+        packaging = first_row.get('packaging', 'N/A')
+        if len(packaging) > 16:
+            packaging = packaging[:14] + '..'
+
+        # Collect inventory info for this variant
+        inv_parts = []
+        for key in ['inv_chino_qty', 'inv_nj_qty', 'inv_sw_qty', 'inv_edison_qty']:
+            if key in first_row and first_row[key]:
+                loc = key.replace('inv_', '').replace('_qty', '')
+                qty = first_row[key]
+                inv_parts.append(f"{loc}:{qty}")
+        inv_str = ', '.join(inv_parts) if inv_parts else '-'
+
+        # Sort tiers by quantity
+        sorted_rows = sorted(variant_rows, key=lambda r: r.get('tier_quantity', 0))
+
+        for i, row in enumerate(sorted_rows):
+            tier_qty = row.get('tier_quantity', 0)
+            price = row.get('price', 0)
+            price_type = row.get('price_type', 'tiered')
+
+            # Only show packaging and inventory on first row of variant
+            if i == 0:
+                pkg_display = packaging
+                inv_display = inv_str
+            else:
+                pkg_display = ''
+                inv_display = ''
+
+            # Format tier
+            if price_type == 'flat_rate':
+                tier_str = 'flat'
+            else:
+                tier_str = f"{tier_qty}+"
+
+            lines.append(f"    {pkg_display:<16} {tier_str:>8} {f'${price:,.2f}':>10} {inv_display:<30}")
+
+    return '\n'.join(lines)
+
+
 # =============================================================================
 # Database Functions
 # =============================================================================
@@ -1833,13 +1898,27 @@ def main():
                         all_data.extend(rows)
                         # Save to database
                         save_to_database(db_conn, rows)
-                        # Check if flat-rate or tiered
-                        if rows[0].get('price_type') == 'flat_rate':
-                            print(f"    → Flat rate sale price: ${rows[0].get('price', 0)}", flush=True)
+
+                        # Count unique variants
+                        unique_variants = len(set(r.get('variant_sku', '') for r in rows))
+                        tier_count = len(rows)
+                        price_type = rows[0].get('price_type', 'tiered')
+
+                        if unique_variants == 1:
+                            if price_type == 'flat_rate':
+                                print(f"    → 1 variant, flat rate ${rows[0].get('price', 0)}/kg", flush=True)
+                            else:
+                                print(f"    → 1 variant, {tier_count} price tiers", flush=True)
                         else:
-                            print(f"    → {len(rows)} price tiers", flush=True)
+                            print(f"    → {unique_variants} variants, {tier_count} total rows", flush=True)
+
+                        # Print detailed breakdown
+                        details = format_product_details(rows, verbose=True)
+                        if details:
+                            print(details, flush=True)
+                        print(flush=True)  # Blank line between products
                     else:
-                        print(f"    → No pricing data", flush=True)
+                        print(f"    → No pricing data\n", flush=True)
 
                     # Mark as processed
                     processed_skus.add(product_sku)
