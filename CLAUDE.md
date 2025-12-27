@@ -1,7 +1,74 @@
 # IOscraper - Project Context for Claude
 
 ## Overview
-Scraper for IngredientsOnline.com (IO) - a B2B wholesale ingredients marketplace. Extracts pricing, inventory, and product data.
+Scrapers for B2B wholesale ingredient marketplaces:
+- **IngredientsOnline.com (IO)** - B2B marketplace with tiered per-kg pricing
+- **BulkSupplements.com (BS)** - Shopify store with per-package pricing
+
+## Project Structure
+```
+/IOscraper/
+├── IO_scraper.py                   # IngredientsOnline scraper
+├── bulksupplements_scraper.py      # BulkSupplements scraper
+├── .env                            # Credentials (not in git)
+├── venv/                           # Python virtual environment
+├── ingredients.db                  # SQLite fallback (if no Supabase)
+└── CLAUDE.md                       # This file
+```
+
+## Environment Setup
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install pandas requests psycopg2-binary playwright beautifulsoup4
+
+# Create .env file with credentials
+cat > .env << 'EOF'
+IO_EMAIL=your_email@example.com
+IO_PASSWORD=your_password
+SUPABASE_DB_URL=postgresql://postgres.PROJECT_ID:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+EOF
+```
+
+## Usage Examples
+```bash
+# IO scraper - full run
+python IO_scraper.py
+
+# IO scraper - limited test run, no browser
+python IO_scraper.py --max-products 50 --no-playwright
+
+# BS scraper - full run
+python bulksupplements_scraper.py
+
+# BS scraper - limited test run
+python bulksupplements_scraper.py --max-products 50
+```
+
+## Database
+
+### PostgreSQL (Supabase)
+Primary database. Connection via Session Pooler for IPv4 compatibility:
+- Host: `aws-0-us-west-2.pooler.supabase.com`
+- Port: `6543`
+- User: `postgres.PROJECT_ID`
+- Database: `postgres`
+
+Set `USE_POSTGRES = False` in scraper to use SQLite fallback.
+
+### Key Tables
+- `Vendors` - IO and BulkSupplements
+- `Ingredients` - Ingredient names
+- `VendorIngredients` - SKU-level product data per vendor
+- `PriceTiers` - Pricing (tiered for IO, per-package for BS)
+- `Pricing` / `BSPricing` - Flat tables mirroring CSV output
+
+---
+
+## IngredientsOnline.com (IO)
 
 ## API Architecture
 
@@ -239,3 +306,44 @@ The API may timeout under heavy load. Implement retries with backoff.
 - **Variant SKU** (e.g., `59410-100-10312-11455`): Returns "Internal server error"
 
 Always use parent SKU when querying inventory.
+
+---
+
+## BulkSupplements.com (BS)
+
+### API Architecture
+Shopify-based store. Uses standard Shopify JSON endpoints:
+- Product list: `https://www.bulksupplements.com/products.json?page=N&limit=250`
+- Product detail: `https://www.bulksupplements.com/products/HANDLE.json`
+
+No authentication required.
+
+### Data Model
+- **Per-package pricing** (not per-kg tiered like IO)
+- Products have multiple variants by form (Powder, Capsules, Softgels) and size (100g, 250g, 500g, 1kg)
+- Only **powder variants** are scraped (filtered by `option1 == 'powder'`)
+
+### SKU Structure
+```
+[PRODUCT_CODE][SIZE]
+
+Example: MAGTAU250
+         │      └── 250 grams
+         └── Magnesium Taurate
+```
+
+### Variant Filtering
+Products with no powder variants are skipped with status `[SKIPPED-NO_POWDER]`:
+- Oil-based products (castor oil, fish oil)
+- Pill-only products (melatonin pills)
+- Capsule-only products
+
+### Key Differences from IO
+
+| Aspect | IngredientsOnline | BulkSupplements |
+|--------|-------------------|-----------------|
+| Pricing model | Per-kg tiered | Per-package fixed |
+| Min order | 25kg multiples | Any single package |
+| Shipping | Buyer pays (EXW) | Free (vendor pays) |
+| Inventory | Multi-warehouse qty | In stock / Out of stock |
+| Authentication | Required for pricing | Not required |
