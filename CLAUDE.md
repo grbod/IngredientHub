@@ -4,12 +4,16 @@
 Scrapers for B2B wholesale ingredient marketplaces:
 - **IngredientsOnline.com (IO)** - B2B marketplace with tiered per-kg pricing
 - **BulkSupplements.com (BS)** - Shopify store with per-package pricing
+- **BoxNutra.com (BN)** - Shopify store with per-package pricing
+- **TrafaPharma.com (TP)** - Custom PHP site with per-size pricing
 
 ## Project Structure
 ```
 /IOscraper/
-├── IO_scraper.py                   # IngredientsOnline scraper
-├── bulksupplements_scraper.py      # BulkSupplements scraper
+├── IO_scraper.py                   # IngredientsOnline scraper (GraphQL API)
+├── bulksupplements_scraper.py      # BulkSupplements scraper (Shopify JSON)
+├── boxnutra_scraper.py             # BoxNutra scraper (Shopify JSON + HTML)
+├── trafapharma_scraper.py          # TrafaPharma scraper (HTML parsing)
 ├── .env                            # Credentials (not in git)
 ├── venv/                           # Python virtual environment
 ├── ingredients.db                  # SQLite fallback (if no Supabase)
@@ -46,6 +50,18 @@ python bulksupplements_scraper.py
 
 # BS scraper - limited test run
 python bulksupplements_scraper.py --max-products 50
+
+# BoxNutra scraper - full run
+python boxnutra_scraper.py
+
+# BoxNutra scraper - limited test run
+python boxnutra_scraper.py --max-products 50
+
+# TrafaPharma scraper - full run
+python trafapharma_scraper.py
+
+# TrafaPharma scraper - limited test run
+python trafapharma_scraper.py --max-products 50
 ```
 
 ## Database
@@ -60,11 +76,11 @@ Primary database. Connection via Session Pooler for IPv4 compatibility:
 Set `USE_POSTGRES = False` in scraper to use SQLite fallback.
 
 ### Key Tables
-- `Vendors` - IO and BulkSupplements
+- `Vendors` - IO, BulkSupplements, BoxNutra, and TrafaPharma
 - `Ingredients` - Ingredient names
 - `VendorIngredients` - SKU-level product data per vendor
-- `PriceTiers` - Pricing (tiered for IO, per-package for BS)
-- `Pricing` / `BSPricing` - Flat tables mirroring CSV output
+- `PriceTiers` - Pricing (tiered for IO, per-package for BS/BN)
+- `Pricing` / `BSPricing` / `BoxNutraPricing` / `TrafaPricing` - Flat tables mirroring CSV output
 
 ---
 
@@ -347,3 +363,110 @@ Products with no powder variants are skipped with status `[SKIPPED-NO_POWDER]`:
 | Shipping | Buyer pays (EXW) | Free (vendor pays) |
 | Inventory | Multi-warehouse qty | In stock / Out of stock |
 | Authentication | Required for pricing | Not required |
+
+---
+
+## BoxNutra.com (BN)
+
+### API Architecture
+Shopify-based store, similar to BulkSupplements:
+- Product list: `https://www.boxnutra.com/products.json?page=N&limit=250`
+- Product detail: `https://www.boxnutra.com/products/HANDLE.json`
+
+No authentication required.
+
+### Key Differences from BulkSupplements
+- **Availability:** JSON API returns `null` for availability, must scrape HTML for stock status
+- **Product filtering:** Filters out non-ingredient products (shipping insurance, gift cards, deposits)
+- **Grams field:** Direct grams field in JSON (no parsing needed like BS)
+
+### Scraper Usage
+```bash
+# Full run
+python boxnutra_scraper.py
+
+# Limited test run
+python boxnutra_scraper.py --max-products 50
+```
+
+### Business Model
+```python
+BOXNUTRA_BUSINESS_MODEL = {
+    'order_rule_type': 'fixed_pack',
+    'shipping_responsibility': 'vendor',  # Free shipping $49+
+}
+```
+
+---
+
+## TrafaPharma.com (TP)
+
+### Platform Architecture
+Custom PHP site (likely CodeIgniter) with server-side rendering. **No REST/JSON API available** - all data extracted via HTML parsing.
+
+### Technical Details
+- **Products:** ~663 total
+- **Pricing:** Per-size (different prices for each size variant)
+- **Pagination:** Infinite scroll via AJAX POST to `/products/index/pg/`
+- **Authentication:** Not required
+
+### Scraper Usage
+```bash
+# Full run
+python trafapharma_scraper.py
+
+# Limited test run
+python trafapharma_scraper.py --max-products 50
+
+# Discovery only (list products without fetching details)
+python trafapharma_scraper.py --discovery-only
+
+# Resume from checkpoint
+python trafapharma_scraper.py --resume
+```
+
+### Data Extraction Method
+1. **Product Discovery:** Parse `/products` page, find links with "Add to Cart" image
+2. **Product Details:** GET product page, extract name from `<title>`, code from "Product code:" text
+3. **Size Prices:** For each size option, POST to product URL with `prod_size={size_id}` to get updated price
+
+### Product Data Schema
+```python
+{
+    'product_id': int,        # From /cart/add_to_wishlist/{id}
+    'product_code': str,      # e.g., "RM2078"
+    'product_name': str,
+    'category': str,
+    'size_id': str,           # Dropdown option value
+    'size_name': str,         # e.g., "2.2 lbs/1 kg", "25kgs"
+    'size_kg': float,         # Parsed kg value
+    'price': float,           # None if "Inquire Bulk Price"
+    'price_per_kg': float,
+    'url': str
+}
+```
+
+### Size Variants
+Products have variable size options:
+- Small: 10g, 25g, 50g, 100g
+- Medium: 1 lb (450g), 1 kg
+- Bulk: 25kg, Bulk Price (inquiry required)
+
+### "Inquire Bulk Price" Products
+Some products/sizes show "Inquire Bulk Price" instead of a fixed price. These are stored with `price=NULL` in the database.
+
+### Database
+Uses same Supabase/SQLite database as IO and BS scrapers. Creates `TrafaPricing` table for flat data storage:
+- `TrafaPricing` - Per-size pricing data
+
+### Key Differences from IO, BS, and BN
+
+| Aspect | IO | BS | BN | TrafaPharma |
+|--------|----|----|----| ------------|
+| Platform | Magento/GraphQL | Shopify JSON | Shopify JSON | Custom PHP |
+| API | GraphQL | REST JSON | REST JSON | None (HTML) |
+| Auth | Required | None | None | None |
+| Pricing | Per-kg tiered | Per-package | Per-package | Per-size |
+| Sizes | 25kg standard | Multiple (g to kg) | Multiple (g to kg) | Variable (10g to 25kg) |
+| Inventory | Multi-warehouse | In stock/OOS | In stock/OOS (HTML) | Not available |
+| Method | API queries | JSON fetch | JSON + HTML | HTML parse + POST |

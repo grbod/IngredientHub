@@ -20,13 +20,13 @@ import requests
 from bs4 import BeautifulSoup
 
 # Database support - PostgreSQL (Supabase) or SQLite fallback
+import sqlite3  # Always available for fallback/reconnect
 try:
     import psycopg2
     import psycopg2.extras
     HAS_POSTGRES = True
 except ImportError:
     HAS_POSTGRES = False
-    import sqlite3
 
 
 # =============================================================================
@@ -64,6 +64,134 @@ BS_BUSINESS_MODEL = {
     'order_rule_type': 'fixed_pack',
     'shipping_responsibility': 'vendor',  # BS includes free shipping
 }
+
+
+# =============================================================================
+# Database Connection Wrapper (auto-reconnect)
+# =============================================================================
+
+class DatabaseConnection:
+    """
+    Wrapper for database connection that handles automatic reconnection.
+    Detects closed connections and reconnects transparently.
+    """
+
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or DATABASE_FILE
+        self.postgres_url = None
+        self._conn = None
+        self._is_postgres = False
+
+    def connect(self):
+        """Establish database connection."""
+        self.postgres_url = get_postgres_url()
+        if USE_POSTGRES and HAS_POSTGRES and self.postgres_url:
+            self._conn = init_postgres_database(self.postgres_url)
+            self._is_postgres = True
+        else:
+            self._conn = init_sqlite_database(self.db_path)
+            self._is_postgres = False
+        return self._conn
+
+    def reconnect(self):
+        """Reconnect to database after connection loss."""
+        print("  Reconnecting to database...", flush=True)
+        try:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except:
+                    pass
+        except:
+            pass
+
+        # Re-establish connection
+        if self._is_postgres and self.postgres_url:
+            self._conn = psycopg2.connect(self.postgres_url)
+            print("  Database reconnected (PostgreSQL)", flush=True)
+        else:
+            self._conn = sqlite3.connect(self.db_path)
+            self._conn.row_factory = sqlite3.Row
+            print(f"  Database reconnected (SQLite: {self.db_path})", flush=True)
+        return self._conn
+
+    def is_connection_error(self, error: Exception) -> bool:
+        """Check if exception is a connection-related error."""
+        error_str = str(error).lower()
+        connection_errors = [
+            'connection already closed',
+            'connection is closed',
+            'server closed the connection',
+            'could not receive data',
+            'ssl syscall error',
+            'operation timed out',
+            'connection refused',
+            'connection reset',
+            'broken pipe',
+            'network is unreachable',
+        ]
+        return any(err in error_str for err in connection_errors)
+
+    def execute_with_retry(self, func, *args, max_retries: int = 3, **kwargs):
+        """
+        Execute a database function with automatic reconnection on failure.
+
+        Args:
+            func: Function to execute (should take conn as first argument)
+            *args: Additional arguments to pass to func
+            max_retries: Maximum number of reconnection attempts
+            **kwargs: Keyword arguments to pass to func
+
+        Returns:
+            Result of func
+        """
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return func(self._conn, *args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if self.is_connection_error(e):
+                    if attempt < max_retries - 1:
+                        print(f"  Database error: {e}", flush=True)
+                        self.reconnect()
+                        time.sleep(1)  # Brief pause before retry
+                    else:
+                        raise
+                else:
+                    # Non-connection error, don't retry
+                    raise
+        raise last_error
+
+    @property
+    def conn(self):
+        """Get the underlying connection (for direct access when needed)."""
+        return self._conn
+
+    def cursor(self):
+        """Get a cursor from the connection."""
+        return self._conn.cursor()
+
+    def commit(self):
+        """Commit the current transaction with retry."""
+        for attempt in range(3):
+            try:
+                self._conn.commit()
+                return
+            except Exception as e:
+                if self.is_connection_error(e) and attempt < 2:
+                    self.reconnect()
+                else:
+                    raise
+
+    def close(self):
+        """Close the database connection."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except:
+                pass
+            self._conn = None
 
 
 # =============================================================================
@@ -416,26 +544,6 @@ def init_postgres_database(db_url: str):
     for name, state in [('Chino', 'CA'), ('Edison', 'NJ'), ('Southwest', None)]:
         cursor.execute('INSERT INTO Locations (name, state) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING', (name, state))
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS BSPricing (
-            id SERIAL PRIMARY KEY,
-            product_id TEXT,
-            product_title TEXT,
-            ingredient_name TEXT,
-            category TEXT,
-            variant_id TEXT,
-            variant_sku TEXT,
-            packaging TEXT,
-            packaging_kg REAL,
-            pack_size_g REAL,
-            price REAL,
-            price_per_kg REAL,
-            stock_status TEXT,
-            url TEXT,
-            scraped_at TEXT
-        )
-    ''')
-
     conn.commit()
     print("  PostgreSQL database initialized (Supabase)")
     return conn
@@ -443,7 +551,6 @@ def init_postgres_database(db_url: str):
 
 def init_sqlite_database(db_path: str):
     """Initialize SQLite database with schema (fallback)."""
-    import sqlite3
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -472,8 +579,6 @@ def init_sqlite_database(db_path: str):
     cursor.execute('INSERT OR IGNORE INTO Vendors (name, pricing_model, status) VALUES (?, ?, ?)', ('IngredientsOnline', 'per_unit', 'active'))
     cursor.execute('INSERT OR IGNORE INTO Vendors (name, pricing_model, status) VALUES (?, ?, ?)', ('BulkSupplements', 'per_package', 'active'))
     cursor.executemany('INSERT OR IGNORE INTO Locations (name, state) VALUES (?, ?)', [('Chino', 'CA'), ('Edison', 'NJ'), ('Southwest', None)])
-
-    cursor.execute('''CREATE TABLE IF NOT EXISTS BSPricing (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, product_title TEXT, ingredient_name TEXT, category TEXT, variant_id TEXT, variant_sku TEXT, packaging TEXT, packaging_kg REAL, pack_size_g REAL, price REAL, price_per_kg REAL, stock_status TEXT, url TEXT, scraped_at TEXT)''')
 
     conn.commit()
     print(f"  SQLite database initialized: {db_path}")
@@ -578,6 +683,8 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
     """Insert or update vendor ingredient, return vendor_ingredient_id."""
     cursor = conn.cursor()
     ph = db_placeholder(conn)
+    now = datetime.now().isoformat()
+
     cursor.execute(
         f'''SELECT vendor_ingredient_id FROM VendorIngredients
            WHERE vendor_id = {ph} AND variant_id = {ph} AND sku = {ph}''',
@@ -588,28 +695,32 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
         vendor_ingredient_id = row[0]
         cursor.execute(
             f'''UPDATE VendorIngredients SET raw_product_name = {ph},
-               shipping_responsibility = {ph}, current_source_id = {ph}
+               shipping_responsibility = {ph}, current_source_id = {ph},
+               last_seen_at = {ph}, status = 'active'
                WHERE vendor_ingredient_id = {ph}''',
             (raw_name, BS_BUSINESS_MODEL['shipping_responsibility'],
-             source_id, vendor_ingredient_id)
+             source_id, now, vendor_ingredient_id)
         )
         return vendor_ingredient_id
     if is_postgres(conn):
         cursor.execute(
             f'''INSERT INTO VendorIngredients
-               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility, current_source_id)
-               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}) RETURNING vendor_ingredient_id''',
+               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility,
+                current_source_id, last_seen_at, status)
+               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 'active')
+               RETURNING vendor_ingredient_id''',
             (vendor_id, variant_id, sku, raw_name,
-             BS_BUSINESS_MODEL['shipping_responsibility'], source_id)
+             BS_BUSINESS_MODEL['shipping_responsibility'], source_id, now)
         )
         return cursor.fetchone()[0]
     else:
         cursor.execute(
             f'''INSERT INTO VendorIngredients
-               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility, current_source_id)
-               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})''',
+               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility,
+                current_source_id, last_seen_at, status)
+               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 'active')''',
             (vendor_id, variant_id, sku, raw_name,
-             BS_BUSINESS_MODEL['shipping_responsibility'], source_id)
+             BS_BUSINESS_MODEL['shipping_responsibility'], source_id, now)
         )
         return cursor.lastrowid
 
@@ -732,6 +843,32 @@ def upsert_inventory_simple(conn, vendor_ingredient_id: int, stock_status: str, 
                VALUES ({ph}, {ph}, {ph}, {ph})''',
             (vendor_ingredient_id, source_id, stock_status, datetime.now().isoformat())
         )
+
+
+def mark_stale_variants(conn, vendor_id: int, scrape_start_time: str) -> int:
+    """Mark variants not seen in this scrape as inactive.
+
+    Call this after a FULL scrape (not --max-products) to detect products
+    that have been removed from the vendor's site.
+    """
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+
+    # Variants with last_seen_at BEFORE this scrape started are stale
+    cursor.execute(
+        f'''UPDATE VendorIngredients
+           SET status = 'inactive'
+           WHERE vendor_id = {ph}
+           AND status = 'active'
+           AND (last_seen_at IS NULL OR last_seen_at < {ph})''',
+        (vendor_id, scrape_start_time)
+    )
+
+    stale_count = cursor.rowcount
+    if stale_count > 0:
+        print(f"  Marked {stale_count} variants as inactive (not seen in this scrape)")
+
+    return stale_count
 
 
 def save_to_database(conn, rows: List[Dict]) -> None:
@@ -1165,6 +1302,9 @@ def main():
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("=" * 60, flush=True)
 
+    # Track scrape start time for staleness detection
+    scrape_start_time = datetime.now().isoformat()
+
     # Create session for connection pooling
     session = requests.Session()
 
@@ -1218,10 +1358,11 @@ def main():
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         output_file = f"bulksupplements_products_{timestamp}.csv"
 
-    # Initialize SQLite database (shared with IO scraper)
+    # Initialize database with auto-reconnect wrapper
     db_path = DATABASE_FILE
     print(f"\nInitializing database: {db_path}")
-    db_conn = init_database(db_path)
+    db_wrapper = DatabaseConnection(db_path)
+    db_wrapper.connect()
     print("Database initialized")
 
     # Filter out already processed handles
@@ -1244,11 +1385,8 @@ def main():
             rows = scrape_product(handle, session)
             if rows:
                 all_data.extend(rows)
-                # Save to database
-                try:
-                    save_to_database(db_conn, rows)
-                except Exception as db_error:
-                    print(f"    DB error: {db_error}", flush=True)
+                # Save to database with auto-retry
+                db_wrapper.execute_with_retry(save_to_database, rows)
                 processed_handles.append(handle)
                 progress.update(success=True, item_name=handle)
 
@@ -1269,7 +1407,7 @@ def main():
         if len(processed_handles) % CHECKPOINT_INTERVAL == 0:
             print(f"\n>>> Checkpoint saved: {len(processed_handles)} products <<<\n", flush=True)
             # Commit database
-            db_conn.commit()
+            db_wrapper.commit()
             save_checkpoint(processed_handles, all_data, handles, output_file)
 
         # Rate limiting
@@ -1286,9 +1424,18 @@ def main():
     if all_data:
         filepath = save_to_csv(all_data)
 
-        # Final database commit and close
-        db_conn.commit()
-        db_conn.close()
+        # Final database commit
+        db_wrapper.commit()
+
+        # Mark stale variants (only for full scrapes, not --max-products)
+        if not args.max_products:
+            print("\nChecking for stale products...", flush=True)
+            stale_count = db_wrapper.execute_with_retry(
+                mark_stale_variants, 4, scrape_start_time  # vendor_id=4 for BulkSupplements
+            )
+            db_wrapper.commit()
+
+        db_wrapper.close()
 
         clear_checkpoint()
 
@@ -1332,7 +1479,7 @@ def main():
     else:
         print("\nNo data was extracted.", flush=True)
         # Still close database
-        db_conn.close()
+        db_wrapper.close()
 
 
 if __name__ == "__main__":

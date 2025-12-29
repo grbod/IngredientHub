@@ -35,7 +35,10 @@ except ImportError:
 # Playwright for fallback inventory scraping
 _playwright_browser = None
 _playwright_page = None
+_playwright_context = None
 _playwright_authenticated = False
+_playwright_email = None
+_playwright_password = None
 
 
 # =============================================================================
@@ -76,6 +79,134 @@ IO_BUSINESS_MODEL = {
     'shipping_responsibility': 'buyer',
     'shipping_terms': 'EXW'
 }
+
+
+# =============================================================================
+# Database Connection Wrapper with Auto-Reconnect
+# =============================================================================
+
+class DatabaseConnection:
+    """
+    Wrapper for database connection that handles automatic reconnection.
+    Detects closed connections and reconnects transparently.
+    """
+
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or DATABASE_FILE
+        self.postgres_url = None
+        self._conn = None
+        self._is_postgres = False
+
+    def connect(self):
+        """Establish database connection."""
+        self.postgres_url = get_postgres_url()
+        if USE_POSTGRES and HAS_POSTGRES and self.postgres_url:
+            self._conn = init_postgres_database(self.postgres_url)
+            self._is_postgres = True
+        else:
+            self._conn = init_sqlite_database(self.db_path)
+            self._is_postgres = False
+        return self._conn
+
+    def reconnect(self):
+        """Reconnect to database after connection loss."""
+        print("  🔄 Reconnecting to database...", flush=True)
+        try:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except:
+                    pass
+        except:
+            pass
+
+        # Re-establish connection
+        if self._is_postgres and self.postgres_url:
+            self._conn = psycopg2.connect(self.postgres_url)
+            print("  ✓ Database reconnected (PostgreSQL)", flush=True)
+        else:
+            self._conn = sqlite3.connect(self.db_path)
+            self._conn.row_factory = sqlite3.Row
+            print(f"  ✓ Database reconnected (SQLite: {self.db_path})", flush=True)
+        return self._conn
+
+    def is_connection_error(self, error: Exception) -> bool:
+        """Check if exception is a connection-related error."""
+        error_str = str(error).lower()
+        connection_errors = [
+            'connection already closed',
+            'connection is closed',
+            'server closed the connection',
+            'could not receive data',
+            'ssl syscall error',
+            'operation timed out',
+            'connection refused',
+            'connection reset',
+            'broken pipe',
+            'network is unreachable',
+        ]
+        return any(err in error_str for err in connection_errors)
+
+    def execute_with_retry(self, func, *args, max_retries: int = 3, **kwargs):
+        """
+        Execute a database function with automatic reconnection on failure.
+
+        Args:
+            func: Function to execute (should take conn as first argument)
+            *args: Additional arguments to pass to func
+            max_retries: Maximum number of reconnection attempts
+            **kwargs: Keyword arguments to pass to func
+
+        Returns:
+            Result of func
+        """
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return func(self._conn, *args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if self.is_connection_error(e):
+                    if attempt < max_retries - 1:
+                        print(f"  ⚠ Database error: {e}", flush=True)
+                        self.reconnect()
+                        time.sleep(1)  # Brief pause before retry
+                    else:
+                        raise
+                else:
+                    # Non-connection error, don't retry
+                    raise
+        raise last_error
+
+    @property
+    def conn(self):
+        """Get the underlying connection (for direct access when needed)."""
+        return self._conn
+
+    def cursor(self):
+        """Get a cursor from the connection."""
+        return self._conn.cursor()
+
+    def commit(self):
+        """Commit the current transaction with retry."""
+        for attempt in range(3):
+            try:
+                self._conn.commit()
+                return
+            except Exception as e:
+                if self.is_connection_error(e) and attempt < 2:
+                    self.reconnect()
+                else:
+                    raise
+
+    def close(self):
+        """Close the database connection."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except:
+                pass
+            self._conn = None
 
 
 # =============================================================================
@@ -456,54 +587,6 @@ def init_postgres_database(db_url: str):
             (name, state)
         )
 
-    # Flat pricing table (mirrors CSV output for easy querying)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Pricing (
-            id SERIAL PRIMARY KEY,
-            product_name TEXT,
-            ingredient_name TEXT,
-            manufacturer TEXT,
-            category TEXT,
-            product_sku TEXT,
-            variant_sku TEXT,
-            variant_code TEXT,
-            variant_name TEXT,
-            packaging TEXT,
-            packaging_kg REAL,
-            tier_quantity INTEGER,
-            price REAL,
-            price_per_kg REAL,
-            original_price REAL,
-            discount_percent REAL,
-            price_type TEXT,
-            order_rule_type TEXT,
-            order_rule_base_qty INTEGER,
-            order_rule_unit TEXT,
-            shipping_responsibility TEXT,
-            shipping_terms TEXT,
-            url TEXT,
-            scraped_at TEXT,
-            currency TEXT,
-            inv_chino_qty TEXT,
-            inv_chino_leadtime TEXT,
-            inv_chino_eta TEXT,
-            inv_nj_qty TEXT,
-            inv_nj_leadtime TEXT,
-            inv_nj_eta TEXT,
-            inv_sw_qty TEXT,
-            inv_sw_leadtime TEXT,
-            inv_sw_eta TEXT
-        )
-    ''')
-
-    # Create VIEW for bulk items only (packaging >= 0.4 kg)
-    cursor.execute('DROP VIEW IF EXISTS bulk_pricing')
-    cursor.execute('''
-        CREATE VIEW bulk_pricing AS
-        SELECT * FROM Pricing
-        WHERE packaging_kg IS NULL OR packaging_kg >= 0.4
-    ''')
-
     conn.commit()
     print("  PostgreSQL database initialized (Supabase)")
     return conn
@@ -710,54 +793,6 @@ def init_sqlite_database(db_path: str):
         [('Chino', 'CA'), ('Edison', 'NJ'), ('Southwest', None)]
     )
 
-    # Flat pricing table (mirrors CSV output for easy querying)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Pricing (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_name TEXT,
-            ingredient_name TEXT,
-            manufacturer TEXT,
-            category TEXT,
-            product_sku TEXT,
-            variant_sku TEXT,
-            variant_code TEXT,
-            variant_name TEXT,
-            packaging TEXT,
-            packaging_kg REAL,
-            tier_quantity INTEGER,
-            price REAL,
-            price_per_kg REAL,
-            original_price REAL,
-            discount_percent REAL,
-            price_type TEXT,
-            order_rule_type TEXT,
-            order_rule_base_qty INTEGER,
-            order_rule_unit TEXT,
-            shipping_responsibility TEXT,
-            shipping_terms TEXT,
-            url TEXT,
-            scraped_at TEXT,
-            currency TEXT,
-            inv_chino_qty TEXT,
-            inv_chino_leadtime TEXT,
-            inv_chino_eta TEXT,
-            inv_nj_qty TEXT,
-            inv_nj_leadtime TEXT,
-            inv_nj_eta TEXT,
-            inv_sw_qty TEXT,
-            inv_sw_leadtime TEXT,
-            inv_sw_eta TEXT
-        )
-    ''')
-
-    # Create VIEW for bulk items only (packaging >= 0.4 kg)
-    cursor.execute('DROP VIEW IF EXISTS bulk_pricing')
-    cursor.execute('''
-        CREATE VIEW bulk_pricing AS
-        SELECT * FROM Pricing
-        WHERE packaging_kg IS NULL OR packaging_kg >= 0.4
-    ''')
-
     conn.commit()
     print(f"  SQLite database initialized: {db_path}")
     return conn
@@ -881,6 +916,8 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
     """Insert or update vendor ingredient, return vendor_ingredient_id."""
     cursor = conn.cursor()
     ph = db_placeholder(conn)
+    now = datetime.now().isoformat()
+
     cursor.execute(
         f'''SELECT vendor_ingredient_id FROM VendorIngredients
            WHERE vendor_id = {ph} AND variant_id = {ph} AND sku = {ph}''',
@@ -891,28 +928,34 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
         vendor_ingredient_id = row[0]
         cursor.execute(
             f'''UPDATE VendorIngredients SET raw_product_name = {ph},
-               shipping_responsibility = {ph}, shipping_terms = {ph}, current_source_id = {ph}
+               shipping_responsibility = {ph}, shipping_terms = {ph}, current_source_id = {ph},
+               last_seen_at = {ph}, status = 'active'
                WHERE vendor_ingredient_id = {ph}''',
             (raw_name, IO_BUSINESS_MODEL['shipping_responsibility'],
-             IO_BUSINESS_MODEL['shipping_terms'], source_id, vendor_ingredient_id)
+             IO_BUSINESS_MODEL['shipping_terms'], source_id, now, vendor_ingredient_id)
         )
         return vendor_ingredient_id
     if is_postgres(conn):
         cursor.execute(
             f'''INSERT INTO VendorIngredients
-               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility, shipping_terms, current_source_id)
-               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}) RETURNING vendor_ingredient_id''',
+               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility,
+                shipping_terms, current_source_id, last_seen_at, status)
+               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 'active')
+               RETURNING vendor_ingredient_id''',
             (vendor_id, variant_id, sku, raw_name,
-             IO_BUSINESS_MODEL['shipping_responsibility'], IO_BUSINESS_MODEL['shipping_terms'], source_id)
+             IO_BUSINESS_MODEL['shipping_responsibility'], IO_BUSINESS_MODEL['shipping_terms'],
+             source_id, now)
         )
         return cursor.fetchone()[0]
     else:
         cursor.execute(
             f'''INSERT INTO VendorIngredients
-               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility, shipping_terms, current_source_id)
-               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})''',
+               (vendor_id, variant_id, sku, raw_product_name, shipping_responsibility,
+                shipping_terms, current_source_id, last_seen_at, status)
+               VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 'active')''',
             (vendor_id, variant_id, sku, raw_name,
-             IO_BUSINESS_MODEL['shipping_responsibility'], IO_BUSINESS_MODEL['shipping_terms'], source_id)
+             IO_BUSINESS_MODEL['shipping_responsibility'], IO_BUSINESS_MODEL['shipping_terms'],
+             source_id, now)
         )
         return cursor.lastrowid
 
@@ -1080,6 +1123,56 @@ def upsert_inventory(conn, vendor_ingredient_id: int, location_id: int,
     )
 
 
+def mark_stale_variants(conn, vendor_id: int, scrape_start_time: str) -> int:
+    """Mark variants not seen in this scrape as inactive.
+
+    Call this after a FULL scrape (not --max-products) to detect products
+    that have been removed from the vendor's site.
+    """
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+
+    # Variants with last_seen_at BEFORE this scrape started are stale
+    cursor.execute(
+        f'''UPDATE VendorIngredients
+           SET status = 'inactive'
+           WHERE vendor_id = {ph}
+           AND status = 'active'
+           AND (last_seen_at IS NULL OR last_seen_at < {ph})''',
+        (vendor_id, scrape_start_time)
+    )
+
+    stale_count = cursor.rowcount
+    if stale_count > 0:
+        print(f"  Marked {stale_count} variants as inactive (not seen in this scrape)")
+
+    return stale_count
+
+
+def mark_missing_variants_for_product(conn, vendor_id: int, variant_id: int,
+                                       seen_skus: List[str], scrape_time: str) -> int:
+    """Mark variants of this product that weren't in current scrape as inactive."""
+    if not seen_skus:
+        return 0
+
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+
+    # Mark variants for this product NOT in seen_skus as inactive
+    placeholders = ','.join([ph] * len(seen_skus))
+    cursor.execute(
+        f'''UPDATE VendorIngredients
+           SET status = 'inactive'
+           WHERE vendor_id = {ph}
+           AND variant_id = {ph}
+           AND sku NOT IN ({placeholders})
+           AND status = 'active' ''',
+        (vendor_id, variant_id, *seen_skus)
+    )
+
+    return cursor.rowcount
+
+
 def save_to_database(conn, rows: List[Dict]) -> None:
     """Save processed product rows to the database."""
     if not rows:
@@ -1128,6 +1221,9 @@ def save_to_database(conn, rows: List[Dict]) -> None:
             sku_groups[sku] = []
         sku_groups[sku].append(row)
 
+    # Track seen SKUs for variant-level staleness
+    seen_skus = list(sku_groups.keys())
+
     for sku, sku_rows in sku_groups.items():
         # Create/update vendor ingredient
         vendor_ingredient_id = upsert_vendor_ingredient(conn, vendor_id, variant_id, sku, product_name, source_id)
@@ -1158,6 +1254,9 @@ def save_to_database(conn, rows: List[Dict]) -> None:
                 location_id = get_location_id(conn, warehouse)
                 if location_id:
                     upsert_inventory(conn, vendor_ingredient_id, location_id, value, leadtime, eta, source_id)
+
+    # Mark variants not in this batch as inactive (variant-level staleness)
+    mark_missing_variants_for_product(conn, vendor_id, variant_id, seen_skus, scraped_at)
 
 
 def load_env_file():
@@ -1509,16 +1608,39 @@ def fetch_products_page(token: str, page: int, page_size: int, in_stock_only: bo
 
 _playwright_context = None
 
-def init_playwright_browser(email: str, password: str) -> bool:
+def init_playwright_browser(email: str = None, password: str = None) -> bool:
     """
     Initialize Playwright browser and authenticate for inventory fallback.
     Uses stealth options from original browser-based scraper.
     Returns True if authentication successful.
+
+    Credentials are stored for automatic reconnection if browser is closed.
     """
     global _playwright_browser, _playwright_page, _playwright_context, _playwright_authenticated
+    global _playwright_email, _playwright_password
+
+    # Store credentials for reconnection
+    if email:
+        _playwright_email = email
+    if password:
+        _playwright_password = password
+
+    # Use stored credentials if not provided
+    email = email or _playwright_email
+    password = password or _playwright_password
+
+    if not email or not password:
+        print("  No credentials available for Playwright", flush=True)
+        return False
 
     if _playwright_authenticated and _playwright_page:
-        return True
+        # Verify browser is still open
+        try:
+            _playwright_page.url  # This will throw if browser is closed
+            return True
+        except:
+            print("  Playwright browser was closed, reinitializing...", flush=True)
+            _playwright_authenticated = False
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1686,14 +1808,21 @@ def init_playwright_browser(email: str, password: str) -> bool:
         return False
 
 
-def scrape_inventory_from_html(product_url: str) -> List[Dict]:
+def scrape_inventory_from_html(product_url: str, retry_on_close: bool = True) -> List[Dict]:
     """
     Fallback: Scrape inventory data from product page HTML using Playwright.
     Returns list of inventory dicts with source_name, quantity, leadtime, next_stocking.
+
+    If browser is closed, attempts to reinitialize it automatically.
     """
     global _playwright_page, _playwright_authenticated
 
     if not _playwright_authenticated or not _playwright_page:
+        # Try to reinitialize if we have stored credentials
+        if retry_on_close and _playwright_email and _playwright_password:
+            print("  Attempting to reinitialize Playwright...", flush=True)
+            if init_playwright_browser():
+                return scrape_inventory_from_html(product_url, retry_on_close=False)
         return []
 
     try:
@@ -1772,6 +1901,26 @@ def scrape_inventory_from_html(product_url: str) -> List[Dict]:
         return inventory_list
 
     except Exception as e:
+        error_str = str(e).lower()
+        browser_closed_errors = [
+            'target page, context or browser has been closed',
+            'browser has been closed',
+            'context has been closed',
+            'page has been closed',
+            'target closed',
+        ]
+
+        if any(err in error_str for err in browser_closed_errors):
+            print(f"    HTML scrape error: {e}", flush=True)
+            # Mark as not authenticated so next call will try to reinitialize
+            _playwright_authenticated = False
+
+            # Try to reinitialize and retry once
+            if retry_on_close and _playwright_email and _playwright_password:
+                print("    🔄 Browser was closed, attempting to reconnect...", flush=True)
+                if init_playwright_browser():
+                    return scrape_inventory_from_html(product_url, retry_on_close=False)
+
         print(f"    HTML scrape error: {e}", flush=True)
         return []
 
@@ -2140,6 +2289,9 @@ def main():
     print("IngredientsOnline.com Pricing Scraper (GraphQL API)")
     print("=" * 60)
 
+    # Track scrape start time for staleness detection
+    scrape_start_time = datetime.now().isoformat()
+
     # Check for checkpoint resume
     checkpoint = None
     processed_skus: Set[str] = set()
@@ -2193,10 +2345,11 @@ def main():
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         output_file = f"pricing_data_{timestamp}.csv"
 
-    # Initialize SQLite database (persistent file)
+    # Initialize database with auto-reconnect wrapper
     db_path = DATABASE_FILE
     print(f"\nInitializing database: {db_path}")
-    db_conn = init_database(db_path)
+    db_wrapper = DatabaseConnection(db_path)
+    db_wrapper.connect()
     print("✓ Database initialized")
 
     print(f"\nScraping {target_count} products ({page_size}/page, {total_pages} pages)")
@@ -2241,8 +2394,8 @@ def main():
                     rows = process_product(product)
                     if rows:
                         all_data.extend(rows)
-                        # Save to database
-                        save_to_database(db_conn, rows)
+                        # Save to database with auto-reconnect
+                        db_wrapper.execute_with_retry(save_to_database, rows)
 
                         # Count unique variants
                         unique_variants = len(set(r.get('variant_sku', '') for r in rows))
@@ -2284,8 +2437,8 @@ def main():
                     # Save data collected so far
                     if all_data:
                         save_to_csv(all_data, output_file=output_file)
-                    # Commit database
-                    db_conn.commit()
+                    # Commit database with auto-reconnect
+                    db_wrapper.commit()
                     save_checkpoint(processed_skus, output_file, products_processed, start_time)
                     print(f"    📍 Checkpoint saved ({products_processed} products)", flush=True)
 
@@ -2313,9 +2466,18 @@ def main():
     if all_data:
         filepath = save_to_csv(all_data, output_file=output_file)
 
-        # Final database commit and close
-        db_conn.commit()
-        db_conn.close()
+        # Final database commit
+        db_wrapper.commit()
+
+        # Mark stale variants (only for full scrapes, not --max-products)
+        if not args.max_products:
+            print("\nChecking for stale products...")
+            stale_count = db_wrapper.execute_with_retry(
+                mark_stale_variants, 1, scrape_start_time  # vendor_id=1 for IngredientsOnline
+            )
+            db_wrapper.commit()
+
+        db_wrapper.close()
 
         print("\n" + "=" * 60)
         print("SCRAPING COMPLETE")
@@ -2345,7 +2507,7 @@ def main():
     else:
         print("\nNo data was extracted.")
         # Still close database and Playwright
-        db_conn.close()
+        db_wrapper.close()
         close_playwright()
         if failed_products:
             print(f"Failed products: {len(failed_products)}")
