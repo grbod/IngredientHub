@@ -118,15 +118,15 @@ class TestSaveToRelationalTablesIntegration:
         cursor.execute("SELECT COUNT(*) FROM ingredients WHERE name = ?", ('Vitamin D3',))
         assert cursor.fetchone()[0] == 1
 
-        # Verify vendor ingredients for each size
-        cursor.execute("SELECT COUNT(*) FROM vendoringredients WHERE sku LIKE ?", ('889-%',))
+        # Verify vendor ingredients for each size (SKU = product_code + size)
+        cursor.execute("SELECT COUNT(*) FROM vendoringredients WHERE sku LIKE ?", ('RM2078-%',))
         assert cursor.fetchone()[0] == 2
 
         # Verify price tiers (2 sizes with valid prices)
         cursor.execute('''
             SELECT COUNT(*) FROM pricetiers pt
             JOIN vendoringredients vi ON pt.vendor_ingredient_id = vi.vendor_ingredient_id
-            WHERE vi.sku LIKE '889-%'
+            WHERE vi.sku LIKE 'RM2078-%'
         ''')
         assert cursor.fetchone()[0] == 2
 
@@ -196,10 +196,12 @@ class TestDatabaseConstraints:
         sqlite_conn.commit()
 
         # First insert
-        id1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'UNIQUE-SKU', 'Product V1', source_id)
+        result1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'UNIQUE-SKU', 'Product V1', source_id)
+        id1 = result1.vendor_ingredient_id
 
         # Second insert with same key should update, not duplicate
-        id2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'UNIQUE-SKU', 'Product V2', source_id)
+        result2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'UNIQUE-SKU', 'Product V2', source_id)
+        id2 = result2.vendor_ingredient_id
 
         assert id1 == id2
 

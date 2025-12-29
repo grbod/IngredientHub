@@ -13,7 +13,9 @@ import time
 import re
 import argparse
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
 
 import pandas as pd
 import requests
@@ -64,6 +66,69 @@ BS_BUSINESS_MODEL = {
     'order_rule_type': 'fixed_pack',
     'shipping_responsibility': 'vendor',  # BS includes free shipping
 }
+
+
+# =============================================================================
+# Statistics & Reporting Types
+# =============================================================================
+
+class AlertType(Enum):
+    """Types of alerts that can be raised during scraping."""
+    NEW_PRODUCT = "new_product"
+    REACTIVATED = "reactivated"
+    PRICE_DECREASE_MAJOR = "price_decrease_major"
+    PRICE_INCREASE_MAJOR = "price_increase_major"
+    STOCK_OUT = "stock_out"
+    STALE_VARIANT = "stale_variant"
+    PARSE_FAILURE = "parse_failure"
+    MISSING_REQUIRED = "missing_required"
+    DB_ERROR = "db_error"
+    HTTP_ERROR = "http_error"
+
+
+class AlertSeverity(Enum):
+    """Severity levels for alerts."""
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+# Map alert types to their severity
+ALERT_SEVERITY = {
+    AlertType.NEW_PRODUCT: AlertSeverity.INFO,
+    AlertType.REACTIVATED: AlertSeverity.INFO,
+    AlertType.PRICE_DECREASE_MAJOR: AlertSeverity.CRITICAL,
+    AlertType.PRICE_INCREASE_MAJOR: AlertSeverity.WARNING,
+    AlertType.STOCK_OUT: AlertSeverity.WARNING,
+    AlertType.STALE_VARIANT: AlertSeverity.WARNING,
+    AlertType.PARSE_FAILURE: AlertSeverity.WARNING,
+    AlertType.MISSING_REQUIRED: AlertSeverity.WARNING,
+    AlertType.DB_ERROR: AlertSeverity.CRITICAL,
+    AlertType.HTTP_ERROR: AlertSeverity.CRITICAL,
+}
+
+
+@dataclass
+class Alert:
+    """Individual alert record."""
+    alert_type: AlertType
+    severity: AlertSeverity
+    sku: Optional[str] = None
+    product_name: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    change_percent: Optional[float] = None
+    message: str = ""
+    vendor_ingredient_id: Optional[int] = None
+
+
+@dataclass
+class UpsertResult:
+    """Result from upserting a vendor ingredient."""
+    vendor_ingredient_id: int
+    is_new: bool
+    was_stale: bool = False  # True if reactivated from stale
+    changed_fields: Dict[str, Tuple] = field(default_factory=dict)  # field → (old, new)
 
 
 # =============================================================================
@@ -679,29 +744,46 @@ def insert_scrape_source(conn, vendor_id: int, url: str, scraped_at: str) -> int
 
 
 def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
-                             sku: str, raw_name: str, source_id: int) -> int:
-    """Insert or update vendor ingredient, return vendor_ingredient_id."""
+                             sku: str, raw_name: str, source_id: int) -> UpsertResult:
+    """Insert or update vendor ingredient, return UpsertResult with tracking info."""
     cursor = conn.cursor()
     ph = db_placeholder(conn)
     now = datetime.now().isoformat()
 
+    # Check if exists and get current status for reactivation detection
     cursor.execute(
-        f'''SELECT vendor_ingredient_id FROM VendorIngredients
+        f'''SELECT vendor_ingredient_id, status, stale_since FROM VendorIngredients
            WHERE vendor_id = {ph} AND variant_id = {ph} AND sku = {ph}''',
         (vendor_id, variant_id, sku)
     )
     row = cursor.fetchone()
+
     if row:
         vendor_ingredient_id = row[0]
+        old_status = row[1] if row[1] else 'active'
+        stale_since = row[2]
+
+        # Check if reactivating from stale
+        was_stale = old_status == 'stale'
+
+        # Update - reactivate if stale, clear stale_since
         cursor.execute(
             f'''UPDATE VendorIngredients SET raw_product_name = {ph},
                shipping_responsibility = {ph}, current_source_id = {ph},
-               last_seen_at = {ph}, status = 'active'
+               last_seen_at = {ph}, status = 'active', stale_since = NULL
                WHERE vendor_ingredient_id = {ph}''',
             (raw_name, BS_BUSINESS_MODEL['shipping_responsibility'],
              source_id, now, vendor_ingredient_id)
         )
-        return vendor_ingredient_id
+
+        return UpsertResult(
+            vendor_ingredient_id=vendor_ingredient_id,
+            is_new=False,
+            was_stale=was_stale,
+            changed_fields={'stale_since': (stale_since, None)} if was_stale else {}
+        )
+
+    # Insert new record
     if is_postgres(conn):
         cursor.execute(
             f'''INSERT INTO VendorIngredients
@@ -712,7 +794,7 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
             (vendor_id, variant_id, sku, raw_name,
              BS_BUSINESS_MODEL['shipping_responsibility'], source_id, now)
         )
-        return cursor.fetchone()[0]
+        vendor_ingredient_id = cursor.fetchone()[0]
     else:
         cursor.execute(
             f'''INSERT INTO VendorIngredients
@@ -722,7 +804,27 @@ def upsert_vendor_ingredient(conn, vendor_id: int, variant_id: int,
             (vendor_id, variant_id, sku, raw_name,
              BS_BUSINESS_MODEL['shipping_responsibility'], source_id, now)
         )
-        return cursor.lastrowid
+        vendor_ingredient_id = cursor.lastrowid
+
+    return UpsertResult(
+        vendor_ingredient_id=vendor_ingredient_id,
+        is_new=True,
+        was_stale=False
+    )
+
+
+def get_existing_price(conn, vendor_ingredient_id: int) -> Optional[float]:
+    """Get the most recent price for a vendor ingredient (for comparison)."""
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+    cursor.execute(
+        f'''SELECT price FROM PriceTiers
+           WHERE vendor_ingredient_id = {ph}
+           ORDER BY effective_date DESC LIMIT 1''',
+        (vendor_ingredient_id,)
+    )
+    row = cursor.fetchone()
+    return float(row[0]) if row and row[0] else None
 
 
 def delete_old_price_tiers(conn, vendor_ingredient_id: int) -> None:
@@ -824,6 +926,19 @@ def upsert_packaging_size(conn, vendor_ingredient_id: int, pack_size_g: float, d
     )
 
 
+def get_existing_stock_status(conn, vendor_ingredient_id: int) -> Optional[str]:
+    """Get the existing stock status for a vendor ingredient (for comparison)."""
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+    cursor.execute(
+        f'''SELECT stock_status FROM VendorInventory
+           WHERE vendor_ingredient_id = {ph}''',
+        (vendor_ingredient_id,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
 def upsert_inventory_simple(conn, vendor_ingredient_id: int, stock_status: str, source_id: int) -> None:
     """Insert or update simple inventory status (no warehouse location)."""
     cursor = conn.cursor()
@@ -845,34 +960,69 @@ def upsert_inventory_simple(conn, vendor_ingredient_id: int, stock_status: str, 
         )
 
 
-def mark_stale_variants(conn, vendor_id: int, scrape_start_time: str) -> int:
-    """Mark variants not seen in this scrape as inactive.
+def mark_stale_variants(conn, vendor_id: int, scrape_start_time: str,
+                        stats: Optional['StatsTracker'] = None) -> List[Dict]:
+    """Mark variants not seen in this scrape as stale (soft-delete).
 
     Call this after a FULL scrape (not --max-products) to detect products
     that have been removed from the vendor's site.
+
+    Returns list of stale variant info for reporting.
     """
     cursor = conn.cursor()
     ph = db_placeholder(conn)
+    now = datetime.now().isoformat()
 
-    # Variants with last_seen_at BEFORE this scrape started are stale
+    # First SELECT variants that will become stale (for reporting)
     cursor.execute(
-        f'''UPDATE VendorIngredients
-           SET status = 'inactive'
+        f'''SELECT vendor_ingredient_id, sku, raw_product_name, last_seen_at
+           FROM VendorIngredients
            WHERE vendor_id = {ph}
            AND status = 'active'
            AND (last_seen_at IS NULL OR last_seen_at < {ph})''',
         (vendor_id, scrape_start_time)
     )
+    stale_rows = cursor.fetchall()
 
-    stale_count = cursor.rowcount
-    if stale_count > 0:
-        print(f"  Marked {stale_count} variants as inactive (not seen in this scrape)")
+    stale_variants = []
+    for row in stale_rows:
+        stale_variants.append({
+            'vendor_ingredient_id': row[0],
+            'sku': row[1],
+            'product_name': row[2],
+            'last_seen_at': str(row[3]) if row[3] else None
+        })
 
-    return stale_count
+    if not stale_variants:
+        return []
+
+    # Update to stale with stale_since timestamp
+    cursor.execute(
+        f'''UPDATE VendorIngredients
+           SET status = 'stale', stale_since = {ph}
+           WHERE vendor_id = {ph}
+           AND status = 'active'
+           AND (last_seen_at IS NULL OR last_seen_at < {ph})''',
+        (now, vendor_id, scrape_start_time)
+    )
+
+    # Record in stats if provided
+    if stats:
+        for v in stale_variants:
+            stats.record_stale(
+                sku=v['sku'],
+                name=v['product_name'],
+                last_seen_at=v['last_seen_at'],
+                vendor_ingredient_id=v['vendor_ingredient_id']
+            )
+
+    print(f"  Marked {len(stale_variants)} variants as stale (soft-deleted)")
+    return stale_variants
 
 
-def save_to_database(conn, rows: List[Dict]) -> None:
-    """Save processed product rows to the database."""
+def save_to_database(conn, rows: List[Dict],
+                     stats: Optional['StatsTracker'] = None) -> None:
+    """Save processed product rows to the database with change tracking."""
     if not rows:
         return
 
@@ -908,14 +1058,39 @@ def save_to_database(conn, rows: List[Dict]) -> None:
         pack_description = row.get('pack_size_description', '')
         stock_status = row.get('stock_status', 'unknown')
 
-        # Create/update vendor ingredient
-        vendor_ingredient_id = upsert_vendor_ingredient(
+        # Parse new price
+        try:
+            new_price = float(row.get('price', 0) or 0)
+        except (ValueError, TypeError):
+            new_price = 0
+
+        # Create/update vendor ingredient (returns UpsertResult with tracking info)
+        upsert_result = upsert_vendor_ingredient(
             conn, vendor_id, variant_id, sku, product_title, source_id
         )
+        vendor_ingredient_id = upsert_result.vendor_ingredient_id
+
+        # Track new product or reactivation
+        if stats:
+            if upsert_result.is_new:
+                stats.record_new_product(sku, product_title, vendor_ingredient_id)
+            elif upsert_result.was_stale:
+                stale_since = upsert_result.changed_fields.get('stale_since', (None, None))[0]
+                stats.record_reactivated(sku, product_title, str(stale_since) if stale_since else None, vendor_ingredient_id)
+
+        # Get existing price BEFORE deleting (for change tracking)
+        old_price = get_existing_price(conn, vendor_ingredient_id)
 
         # Delete old price tier and insert new
         delete_old_price_tiers(conn, vendor_ingredient_id)
         insert_price_tier(conn, vendor_ingredient_id, row, source_id)
+
+        # Track price changes (>30% threshold)
+        if stats and old_price is not None and new_price > 0 and new_price != old_price:
+            stats.record_price_change(sku, product_title, old_price, new_price, vendor_ingredient_id)
+
+        # Get existing stock status BEFORE upserting (for change tracking)
+        old_stock_status = get_existing_stock_status(conn, vendor_ingredient_id)
 
         # Insert order rule and packaging
         upsert_order_rule(conn, vendor_ingredient_id, pack_size_g, scraped_at)
@@ -923,6 +1098,23 @@ def save_to_database(conn, rows: List[Dict]) -> None:
 
         # Insert inventory status
         upsert_inventory_simple(conn, vendor_ingredient_id, stock_status, source_id)
+
+        # Track stock status changes (in_stock → out_of_stock only)
+        if stats and old_stock_status is not None:
+            was_in_stock = old_stock_status == 'in_stock'
+            is_in_stock = stock_status == 'in_stock'
+            if was_in_stock and not is_in_stock:
+                stats.record_stock_change(sku, product_title, was_in_stock, is_in_stock, vendor_ingredient_id)
+
+        # Track updated vs unchanged
+        if stats and not upsert_result.is_new and not upsert_result.was_stale:
+            # Check if anything changed (price or stock status)
+            price_changed = old_price is not None and new_price > 0 and old_price != new_price
+            stock_changed = old_stock_status is not None and old_stock_status != stock_status
+            if price_changed or stock_changed:
+                stats.record_updated()
+            else:
+                stats.record_unchanged()
 
 
 # =============================================================================
@@ -971,6 +1163,438 @@ class ProgressTracker:
         print(f"Completed: {successful}/{self.total} "
               f"({self.skipped} skipped, {self.failed} errors) in {elapsed_str}")
         print(f"{'='*60}", flush=True)
+
+
+# =============================================================================
+# Statistics Tracker
+# =============================================================================
+
+class StatsTracker:
+    """
+    Track scraping statistics and alerts for reporting.
+    Collects metrics during scrape, then persists to DB and prints report at end.
+    """
+
+    def __init__(self, vendor_id: int, is_full_scrape: bool = True, max_products_limit: Optional[int] = None):
+        self.vendor_id = vendor_id
+        self.is_full_scrape = is_full_scrape
+        self.max_products_limit = max_products_limit
+        self.started_at = datetime.now()
+        self.completed_at: Optional[datetime] = None
+
+        # Counters
+        self.products_discovered = 0
+        self.products_processed = 0
+        self.products_skipped = 0
+        self.products_failed = 0
+        self.variants_new = 0
+        self.variants_updated = 0
+        self.variants_unchanged = 0
+        self.variants_stale = 0
+        self.variants_reactivated = 0
+
+        # Alerts (in-memory during scrape)
+        self.alerts: List[Alert] = []
+
+        # Run ID (set after persisting to ScrapeRuns)
+        self.run_id: Optional[int] = None
+
+    def record_new_product(self, sku: str, name: str, vendor_ingredient_id: Optional[int] = None):
+        """Record a new product being added to the database."""
+        self.variants_new += 1
+        self.alerts.append(Alert(
+            alert_type=AlertType.NEW_PRODUCT,
+            severity=ALERT_SEVERITY[AlertType.NEW_PRODUCT],
+            sku=sku,
+            product_name=name,
+            message=f"New product: {name}",
+            vendor_ingredient_id=vendor_ingredient_id
+        ))
+
+    def record_reactivated(self, sku: str, name: str, stale_since: Optional[str] = None,
+                           vendor_ingredient_id: Optional[int] = None):
+        """Record a stale product being reactivated."""
+        self.variants_reactivated += 1
+        msg = f"Reactivated: {name}"
+        if stale_since:
+            msg += f" (was stale since {stale_since})"
+        self.alerts.append(Alert(
+            alert_type=AlertType.REACTIVATED,
+            severity=ALERT_SEVERITY[AlertType.REACTIVATED],
+            sku=sku,
+            product_name=name,
+            old_value=stale_since,
+            message=msg,
+            vendor_ingredient_id=vendor_ingredient_id
+        ))
+
+    def record_price_change(self, sku: str, name: str, old_price: float, new_price: float,
+                            vendor_ingredient_id: Optional[int] = None):
+        """Record a price change if it exceeds 30% threshold."""
+        if old_price <= 0:
+            return
+
+        change_pct = ((new_price - old_price) / old_price) * 100
+
+        if change_pct <= -30:
+            # Major price decrease
+            self.alerts.append(Alert(
+                alert_type=AlertType.PRICE_DECREASE_MAJOR,
+                severity=ALERT_SEVERITY[AlertType.PRICE_DECREASE_MAJOR],
+                sku=sku,
+                product_name=name,
+                old_value=f"${old_price:.2f}",
+                new_value=f"${new_price:.2f}",
+                change_percent=change_pct,
+                message=f"Price dropped {change_pct:.1f}%: ${old_price:.2f} → ${new_price:.2f}",
+                vendor_ingredient_id=vendor_ingredient_id
+            ))
+        elif change_pct >= 30:
+            # Major price increase
+            self.alerts.append(Alert(
+                alert_type=AlertType.PRICE_INCREASE_MAJOR,
+                severity=ALERT_SEVERITY[AlertType.PRICE_INCREASE_MAJOR],
+                sku=sku,
+                product_name=name,
+                old_value=f"${old_price:.2f}",
+                new_value=f"${new_price:.2f}",
+                change_percent=change_pct,
+                message=f"Price increased {change_pct:.1f}%: ${old_price:.2f} → ${new_price:.2f}",
+                vendor_ingredient_id=vendor_ingredient_id
+            ))
+
+    def record_stock_change(self, sku: str, name: str, was_in_stock: bool, is_in_stock: bool,
+                            vendor_ingredient_id: Optional[int] = None):
+        """Record stock status change (only in_stock → out_of_stock)."""
+        if was_in_stock and not is_in_stock:
+            self.alerts.append(Alert(
+                alert_type=AlertType.STOCK_OUT,
+                severity=ALERT_SEVERITY[AlertType.STOCK_OUT],
+                sku=sku,
+                product_name=name,
+                old_value="in_stock",
+                new_value="out_of_stock",
+                message=f"Stock out: {name}",
+                vendor_ingredient_id=vendor_ingredient_id
+            ))
+
+    def record_unchanged(self):
+        """Record an unchanged variant."""
+        self.variants_unchanged += 1
+
+    def record_updated(self):
+        """Record an updated variant."""
+        self.variants_updated += 1
+
+    def record_stale(self, sku: str, name: str, last_seen_at: Optional[str] = None,
+                     vendor_ingredient_id: Optional[int] = None):
+        """Record a variant being marked as stale (soft-deleted)."""
+        self.variants_stale += 1
+        self.alerts.append(Alert(
+            alert_type=AlertType.STALE_VARIANT,
+            severity=ALERT_SEVERITY[AlertType.STALE_VARIANT],
+            sku=sku,
+            product_name=name,
+            old_value=last_seen_at,
+            message=f"Stale: {name} (last seen: {last_seen_at or 'unknown'})",
+            vendor_ingredient_id=vendor_ingredient_id
+        ))
+
+    def record_parse_failure(self, sku: Optional[str], name: Optional[str], field: str, raw_value: str):
+        """Record a parse failure for a field."""
+        self.alerts.append(Alert(
+            alert_type=AlertType.PARSE_FAILURE,
+            severity=ALERT_SEVERITY[AlertType.PARSE_FAILURE],
+            sku=sku,
+            product_name=name,
+            old_value=raw_value,
+            message=f"Parse failure for '{field}': {raw_value[:50]}"
+        ))
+
+    def record_missing_required(self, sku: Optional[str], name: Optional[str], field: str):
+        """Record a missing required field."""
+        self.alerts.append(Alert(
+            alert_type=AlertType.MISSING_REQUIRED,
+            severity=ALERT_SEVERITY[AlertType.MISSING_REQUIRED],
+            sku=sku,
+            product_name=name,
+            message=f"Missing required field: {field}"
+        ))
+
+    def record_failure(self, slug: str, error_type: str, error_msg: str):
+        """Record a scraping failure (HTTP or DB error)."""
+        self.products_failed += 1
+        alert_type = AlertType.HTTP_ERROR if error_type == "HTTP" else AlertType.DB_ERROR
+        self.alerts.append(Alert(
+            alert_type=alert_type,
+            severity=ALERT_SEVERITY[alert_type],
+            sku=slug,
+            message=f"[{error_type}] {slug}: {error_msg}"
+        ))
+
+    def get_alert_counts(self) -> Dict[str, int]:
+        """Get counts of each alert type."""
+        counts: Dict[str, int] = {}
+        for alert in self.alerts:
+            key = alert.alert_type.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def get_alerts_by_type(self, alert_type: AlertType) -> List[Alert]:
+        """Get all alerts of a specific type."""
+        return [a for a in self.alerts if a.alert_type == alert_type]
+
+    def to_checkpoint_dict(self) -> Dict:
+        """Serialize stats for checkpoint."""
+        return {
+            'vendor_id': self.vendor_id,
+            'is_full_scrape': self.is_full_scrape,
+            'max_products_limit': self.max_products_limit,
+            'started_at': self.started_at.isoformat(),
+            'products_discovered': self.products_discovered,
+            'products_processed': self.products_processed,
+            'products_skipped': self.products_skipped,
+            'products_failed': self.products_failed,
+            'variants_new': self.variants_new,
+            'variants_updated': self.variants_updated,
+            'variants_unchanged': self.variants_unchanged,
+            'variants_stale': self.variants_stale,
+            'variants_reactivated': self.variants_reactivated,
+        }
+
+    @classmethod
+    def from_checkpoint_dict(cls, data: Dict) -> 'StatsTracker':
+        """Deserialize stats from checkpoint."""
+        stats = cls(
+            vendor_id=data['vendor_id'],
+            is_full_scrape=data.get('is_full_scrape', True),
+            max_products_limit=data.get('max_products_limit')
+        )
+        stats.started_at = datetime.fromisoformat(data['started_at'])
+        stats.products_discovered = data.get('products_discovered', 0)
+        stats.products_processed = data.get('products_processed', 0)
+        stats.products_skipped = data.get('products_skipped', 0)
+        stats.products_failed = data.get('products_failed', 0)
+        stats.variants_new = data.get('variants_new', 0)
+        stats.variants_updated = data.get('variants_updated', 0)
+        stats.variants_unchanged = data.get('variants_unchanged', 0)
+        stats.variants_stale = data.get('variants_stale', 0)
+        stats.variants_reactivated = data.get('variants_reactivated', 0)
+        return stats
+
+    def print_report(self):
+        """Print the final scrape statistics report to console."""
+        self.completed_at = datetime.now()
+        duration = self.completed_at - self.started_at
+        duration_str = str(timedelta(seconds=int(duration.total_seconds())))
+
+        print("\n" + "=" * 70)
+        print("SCRAPE STATISTICS REPORT")
+        print("=" * 70)
+        print(f"\nRun Duration: {duration_str}")
+        print(f"Full Scrape: {'Yes' if self.is_full_scrape else 'No'}")
+        if self.max_products_limit:
+            print(f"Max Products Limit: {self.max_products_limit}")
+
+        print("\n--- PRODUCTS ---")
+        print(f"  Discovered:    {self.products_discovered:>6}")
+        print(f"  Processed:     {self.products_processed:>6}")
+        print(f"  Skipped:       {self.products_skipped:>6}")
+        print(f"  Failed:        {self.products_failed:>6}")
+
+        print("\n--- VARIANTS ---")
+        print(f"  New:           {self.variants_new:>6}")
+        print(f"  Updated:       {self.variants_updated:>6}")
+        print(f"  Unchanged:     {self.variants_unchanged:>6}")
+        print(f"  Stale:         {self.variants_stale:>6}")
+        print(f"  Reactivated:   {self.variants_reactivated:>6}")
+
+        # Alert counts
+        alert_counts = self.get_alert_counts()
+        if alert_counts:
+            print("\n--- ALERTS ---")
+            for alert_type, count in sorted(alert_counts.items()):
+                print(f"  {alert_type:<25} {count:>6}")
+
+        # Major price changes
+        price_decreases = self.get_alerts_by_type(AlertType.PRICE_DECREASE_MAJOR)
+        price_increases = self.get_alerts_by_type(AlertType.PRICE_INCREASE_MAJOR)
+        if price_decreases or price_increases:
+            print("\n--- MAJOR PRICE CHANGES (>30%) ---")
+            for alert in price_decreases[:10]:
+                name = (alert.product_name or alert.sku or "Unknown")[:35]
+                print(f"  ▼ {name:<35} {alert.change_percent:>+6.1f}%: {alert.old_value} → {alert.new_value}")
+            for alert in price_increases[:10]:
+                name = (alert.product_name or alert.sku or "Unknown")[:35]
+                print(f"  ▲ {name:<35} {alert.change_percent:>+6.1f}%: {alert.old_value} → {alert.new_value}")
+            total_price = len(price_decreases) + len(price_increases)
+            if total_price > 20:
+                print(f"  ... ({total_price} total)")
+
+        # Stock outs
+        stock_outs = self.get_alerts_by_type(AlertType.STOCK_OUT)
+        if stock_outs:
+            print("\n--- STOCK OUTS ---")
+            for alert in stock_outs[:10]:
+                sku = alert.sku or "N/A"
+                name = (alert.product_name or "Unknown")[:40]
+                print(f"  {sku:<12} {name:<40} in_stock → out_of_stock")
+            if len(stock_outs) > 10:
+                print(f"  ... ({len(stock_outs)} total)")
+
+        # Stale variants
+        stale = self.get_alerts_by_type(AlertType.STALE_VARIANT)
+        if stale:
+            print("\n--- STALE VARIANTS (Soft-deleted) ---")
+            for alert in stale[:10]:
+                sku = alert.sku or "N/A"
+                name = (alert.product_name or "Unknown")[:40]
+                last_seen = alert.old_value or "unknown"
+                print(f"  {sku:<12} {name:<40} Last seen: {last_seen}")
+            if len(stale) > 10:
+                print(f"  ... ({len(stale)} total)")
+
+        # Reactivated
+        reactivated = self.get_alerts_by_type(AlertType.REACTIVATED)
+        if reactivated:
+            print("\n--- REACTIVATED (Returned to site) ---")
+            for alert in reactivated[:10]:
+                sku = alert.sku or "N/A"
+                name = (alert.product_name or "Unknown")[:40]
+                stale_since = alert.old_value or "unknown"
+                print(f"  {sku:<12} {name:<40} Was stale since: {stale_since}")
+            if len(reactivated) > 10:
+                print(f"  ... ({len(reactivated)} total)")
+
+        # Failures
+        failures = self.get_alerts_by_type(AlertType.HTTP_ERROR) + self.get_alerts_by_type(AlertType.DB_ERROR)
+        if failures:
+            print("\n--- FAILURES ---")
+            for alert in failures[:10]:
+                print(f"  {alert.message}")
+            if len(failures) > 10:
+                print(f"  ... ({len(failures)} total)")
+
+        print("\n" + "=" * 70)
+
+
+# =============================================================================
+# Scrape Run Persistence
+# =============================================================================
+
+def save_scrape_run(conn, stats: 'StatsTracker') -> Optional[int]:
+    """Save scrape run summary to ScrapeRuns table. Returns run_id."""
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+
+    try:
+        if is_postgres(conn):
+            cursor.execute(
+                f'''INSERT INTO scraperuns
+                   (vendor_id, started_at, completed_at, status,
+                    products_discovered, products_processed, products_skipped, products_failed,
+                    variants_new, variants_updated, variants_unchanged, variants_stale, variants_reactivated,
+                    price_alerts, stock_alerts, data_quality_alerts,
+                    is_full_scrape, max_products_limit)
+                   VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                   RETURNING run_id''',
+                (stats.vendor_id, stats.started_at.isoformat(),
+                 datetime.now().isoformat(), 'completed',
+                 stats.products_discovered, stats.products_processed,
+                 stats.products_skipped, stats.products_failed,
+                 stats.variants_new, stats.variants_updated,
+                 stats.variants_unchanged, stats.variants_stale, stats.variants_reactivated,
+                 len(stats.get_alerts_by_type(AlertType.PRICE_DECREASE_MAJOR)) +
+                 len(stats.get_alerts_by_type(AlertType.PRICE_INCREASE_MAJOR)),
+                 len(stats.get_alerts_by_type(AlertType.STOCK_OUT)),
+                 len(stats.get_alerts_by_type(AlertType.PARSE_FAILURE)) +
+                 len(stats.get_alerts_by_type(AlertType.MISSING_REQUIRED)),
+                 stats.is_full_scrape, stats.max_products_limit)
+            )
+            run_id = cursor.fetchone()[0]
+        else:
+            cursor.execute(
+                f'''INSERT INTO scraperuns
+                   (vendor_id, started_at, completed_at, status,
+                    products_discovered, products_processed, products_skipped, products_failed,
+                    variants_new, variants_updated, variants_unchanged, variants_stale, variants_reactivated,
+                    price_alerts, stock_alerts, data_quality_alerts,
+                    is_full_scrape, max_products_limit)
+                   VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})''',
+                (stats.vendor_id, stats.started_at.isoformat(),
+                 datetime.now().isoformat(), 'completed',
+                 stats.products_discovered, stats.products_processed,
+                 stats.products_skipped, stats.products_failed,
+                 stats.variants_new, stats.variants_updated,
+                 stats.variants_unchanged, stats.variants_stale, stats.variants_reactivated,
+                 len(stats.get_alerts_by_type(AlertType.PRICE_DECREASE_MAJOR)) +
+                 len(stats.get_alerts_by_type(AlertType.PRICE_INCREASE_MAJOR)),
+                 len(stats.get_alerts_by_type(AlertType.STOCK_OUT)),
+                 len(stats.get_alerts_by_type(AlertType.PARSE_FAILURE)) +
+                 len(stats.get_alerts_by_type(AlertType.MISSING_REQUIRED)),
+                 stats.is_full_scrape, stats.max_products_limit)
+            )
+            run_id = cursor.lastrowid
+
+        stats.run_id = run_id
+        return run_id
+    except Exception as e:
+        print(f"  Note: Could not save scrape run (table may not exist): {e}")
+        return None
+
+
+def save_alerts(conn, stats: 'StatsTracker') -> int:
+    """Save warning and critical alerts to ScrapeAlerts table. Returns count saved."""
+    if not stats.run_id:
+        return 0
+
+    cursor = conn.cursor()
+    ph = db_placeholder(conn)
+    saved = 0
+
+    try:
+        for alert in stats.alerts:
+            if alert.severity == AlertSeverity.INFO:
+                continue
+
+            cursor.execute(
+                f'''INSERT INTO scrapealerts
+                   (run_id, vendor_ingredient_id, alert_type, severity,
+                    sku, product_name, old_value, new_value, change_percent, message)
+                   VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})''',
+                (stats.run_id, alert.vendor_ingredient_id,
+                 alert.alert_type.value, alert.severity.value,
+                 alert.sku, alert.product_name,
+                 alert.old_value, alert.new_value,
+                 alert.change_percent, alert.message)
+            )
+            saved += 1
+
+        return saved
+    except Exception as e:
+        print(f"  Note: Could not save alerts (table may not exist): {e}")
+        return 0
+
+
+def cleanup_old_alerts(conn, days: int = 30) -> int:
+    """Delete alerts older than specified days. Returns count deleted."""
+    cursor = conn.cursor()
+
+    try:
+        if is_postgres(conn):
+            cursor.execute(
+                f"DELETE FROM scrapealerts WHERE created_at < NOW() - INTERVAL '{days} days'"
+            )
+        else:
+            cursor.execute(
+                f"DELETE FROM scrapealerts WHERE created_at < datetime('now', '-{days} days')"
+            )
+        deleted = cursor.rowcount
+        if deleted > 0:
+            print(f"  Cleaned up {deleted} alerts older than {days} days")
+        return deleted
+    except Exception:
+        return 0
 
 
 # =============================================================================
@@ -1368,6 +1992,20 @@ def main():
     db_wrapper.connect()
     print("Database initialized")
 
+    # Initialize StatsTracker
+    stats = StatsTracker(
+        vendor_id=4,  # BulkSupplements
+        is_full_scrape=(args.max_products is None),
+        max_products_limit=args.max_products
+    )
+    stats.products_discovered = len(handles)
+
+    # Cleanup old alerts (30 day retention)
+    try:
+        cleanup_old_alerts(db_wrapper.connection)
+    except Exception:
+        pass
+
     # Filter out already processed handles
     if processed_handles:
         remaining_handles = [h for h in handles if h not in processed_handles]
@@ -1389,9 +2027,10 @@ def main():
             if rows:
                 all_data.extend(rows)
                 # Save to database with auto-retry
-                db_wrapper.execute_with_retry(save_to_database, rows)
+                db_wrapper.execute_with_retry(save_to_database, rows, stats)
                 processed_handles.append(handle)
                 progress.update(success=True, item_name=handle)
+                stats.products_processed += 1
 
                 # Print detailed variant table
                 print(f"    → {len(rows)} variants", flush=True)
@@ -1401,10 +2040,12 @@ def main():
                 print(flush=True)  # Blank line between products
             else:
                 progress.update(success=False, item_name=handle, status="SKIPPED-NO_POWDER")
+                stats.products_skipped += 1
                 print(flush=True)  # Blank line for skipped products too
         except Exception as e:
             print(f"    Error: {e}", flush=True)
             progress.update(success=False, item_name=handle, status="ERROR")
+            stats.record_failure(handle, "HTTP", str(e))
 
         # Save checkpoint periodically
         if len(processed_handles) % CHECKPOINT_INTERVAL == 0:
@@ -1433,10 +2074,20 @@ def main():
         # Mark stale variants (only for full scrapes, not --max-products)
         if not args.max_products:
             print("\nChecking for stale products...", flush=True)
-            stale_count = db_wrapper.execute_with_retry(
-                mark_stale_variants, 4, scrape_start_time  # vendor_id=4 for BulkSupplements
+            stale_variants = db_wrapper.execute_with_retry(
+                mark_stale_variants, 4, scrape_start_time, stats  # vendor_id=4 for BulkSupplements
             )
             db_wrapper.commit()
+
+        # Save scrape run and alerts, then print report
+        try:
+            save_scrape_run(db_wrapper.connection, stats)
+            save_alerts(db_wrapper.connection, stats)
+            db_wrapper.commit()
+        except Exception as e:
+            print(f"  Note: Could not persist run data: {e}")
+
+        stats.print_report()
 
         db_wrapper.close()
 
@@ -1481,7 +2132,8 @@ def main():
                 pass
     else:
         print("\nNo data was extracted.", flush=True)
-        # Still close database
+        # Still print stats and close database
+        stats.print_report()
         db_wrapper.close()
 
 

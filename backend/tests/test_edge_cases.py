@@ -21,7 +21,8 @@ class TestBulkSupplementsEdgeCases:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'BS-SKU', 'Product', source_id)
+        result = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'BS-SKU', 'Product', source_id)
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('SELECT shipping_responsibility FROM vendoringredients WHERE vendor_ingredient_id = ?', (vi_id,))
         assert cursor.fetchone()[0] == 'vendor'
@@ -42,7 +43,8 @@ class TestBoxNutraEdgeCases:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(sqlite_conn, 25, 200, 'BN-SKU', 'Product', source_id)
+        result = upsert_vendor_ingredient(sqlite_conn, 25, 200, 'BN-SKU', 'Product', source_id)
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('SELECT shipping_responsibility FROM vendoringredients WHERE vendor_ingredient_id = ?', (vi_id,))
         assert cursor.fetchone()[0] == 'vendor'
@@ -51,12 +53,23 @@ class TestBoxNutraEdgeCases:
 class TestTrafaPharmaEdgeCases:
     """TrafaPharma-specific edge cases."""
 
-    def test_sku_generated_from_product_size(self):
-        """SKU = 'product_id-size_id' format."""
-        product_id = 123
-        size_id = '5'
-        sku = f"{product_id}-{size_id}"
-        assert sku == "123-5"
+    def test_sku_generated_from_product_code_and_size(self):
+        """SKU = 'product_code-size' format (e.g., 'RM2154-1kg')."""
+        product_code = 'RM2154'
+        size_kg = 1.0
+        # Format: use grams if < 1kg, otherwise kg
+        if size_kg < 1:
+            size_str = f"{int(size_kg * 1000)}g"
+        else:
+            size_str = f"{int(size_kg)}kg"
+        sku = f"{product_code}-{size_str}"
+        assert sku == "RM2154-1kg"
+
+        # Test gram format
+        size_kg = 0.025
+        size_str = f"{int(size_kg * 1000)}g"
+        sku = f"{product_code}-{size_str}"
+        assert sku == "RM2154-25g"
 
     def test_size_parsing_kg(self):
         """Size strings with kg parsed correctly."""
@@ -148,15 +161,15 @@ class TestTrafaPharmaEdgeCases:
 
         cursor = sqlite_conn.cursor()
 
-        # Vendor ingredient should still be created
-        cursor.execute("SELECT COUNT(*) FROM vendoringredients WHERE sku = ?", ('999-1',))
+        # Vendor ingredient should still be created (SKU = product_code + size in kg)
+        cursor.execute("SELECT COUNT(*) FROM vendoringredients WHERE sku = ?", ('INQ001-25kg',))
         assert cursor.fetchone()[0] == 1
 
         # But no price tier for NULL price
         cursor.execute('''
             SELECT COUNT(*) FROM pricetiers pt
             JOIN vendoringredients vi ON pt.vendor_ingredient_id = vi.vendor_ingredient_id
-            WHERE vi.sku = '999-1'
+            WHERE vi.sku = 'INQ001-25kg'
         ''')
         assert cursor.fetchone()[0] == 0  # No price tier for Inquire products
 
@@ -219,7 +232,8 @@ class TestCommonEdgeCases:
         sqlite_conn.commit()
 
         # SKU with hyphens and numbers
-        vi_id = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-123-ABC', 'Product', source_id)
+        result = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-123-ABC', 'Product', source_id)
+        vi_id = result.vendor_ingredient_id
         assert vi_id is not None
 
         cursor.execute('SELECT sku FROM vendoringredients WHERE vendor_ingredient_id = ?', (vi_id,))

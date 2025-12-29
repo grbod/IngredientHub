@@ -1,16 +1,8 @@
 import { useState } from 'react'
-import { useProducts } from '@/hooks/useProducts'
-import { useVendors } from '@/hooks/useVendors'
+import { useNavigate } from 'react-router-dom'
+import { useIngredients, useIngredientCount } from '@/hooks/useIngredients'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -19,158 +11,229 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Card, CardContent } from '@/components/ui/card'
 
-function formatPrice(price: number | null) {
-  if (price === null) return '-'
-  return `$${price.toFixed(2)}`
+function CategoryBadge({ category }: { category: string | null }) {
+  if (!category) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+        Uncategorized
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+      {category}
+    </span>
+  )
 }
 
-function formatDate(dateStr: string | null) {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleDateString()
+function StatusBadge({ status }: { status: string | null }) {
+  if (status === 'active') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+        Active
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+      {status || 'Unknown'}
+    </span>
+  )
+}
+
+function SkeletonRow() {
+  return (
+    <TableRow>
+      <TableCell><div className="h-4 bg-muted rounded animate-pulse w-3/4"></div></TableCell>
+      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-28"></div></TableCell>
+      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-16"></div></TableCell>
+      <TableCell><div className="h-4 bg-muted rounded animate-pulse w-8"></div></TableCell>
+    </TableRow>
+  )
 }
 
 export function Products() {
+  const navigate = useNavigate()
   const [search, setSearch] = useState('')
-  const [vendorFilter, setVendorFilter] = useState<string>('all')
   const [page, setPage] = useState(0)
   const pageSize = 50
 
-  const { data: vendors } = useVendors()
-  const { data, isLoading, error } = useProducts({
-    vendorId: vendorFilter !== 'all' ? Number(vendorFilter) : undefined,
+  const { data: totalCount } = useIngredientCount()
+  const { data, isLoading, error } = useIngredients({
     search: search || undefined,
     limit: pageSize,
     offset: page * pageSize,
   })
 
-  const products = data?.data || []
+  const ingredients = data?.data || []
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Products</h1>
-        <p className="text-muted-foreground">Browse all scraped products</p>
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+        <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
+        <div className="relative">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-white/10 backdrop-blur">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold text-white tracking-tight">Products</h1>
+          </div>
+          <p className="text-slate-300 max-w-2xl">
+            Browse {totalCount?.toLocaleString() || 0} ingredients across all vendors
+          </p>
+        </div>
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 opacity-10">
+          <svg className="w-32 h-32 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+          </svg>
+        </div>
       </div>
 
-      <div className="flex gap-4 items-center">
-        <Input
-          placeholder="Search products..."
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(0)
-          }}
-          className="max-w-sm"
-        />
-        <Select value={vendorFilter} onValueChange={(v) => { setVendorFilter(v); setPage(0) }}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="All Vendors" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Vendors</SelectItem>
-            {vendors?.map((v) => (
-              <SelectItem key={v.vendor_id} value={v.vendor_id.toString()}>
-                {v.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {/* Search */}
+      <Card className="border-0 shadow-lg shadow-slate-200/50">
+        <CardContent className="p-6">
+          <div className="relative">
+            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <Input
+              placeholder="Search ingredients..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(0)
+              }}
+              className="pl-11 h-12 text-base border-slate-200 focus:border-slate-400 focus:ring-slate-400"
+            />
+          </div>
+        </CardContent>
+      </Card>
 
-      {error ? (
-        <div className="text-destructive">Error: {error.message}</div>
-      ) : isLoading ? (
-        <div className="text-muted-foreground">Loading products...</div>
-      ) : (
-        <>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Product</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Vendor</TableHead>
-                  <TableHead>Price/kg</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Last Seen</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {products.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
-                      No products found
-                    </TableCell>
+      {/* Table */}
+      <Card className="border-0 shadow-lg shadow-slate-200/50 overflow-hidden">
+        {error ? (
+          <div className="p-12 text-center">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-50 mb-4">
+              <svg className="h-8 w-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-slate-900 mb-1">Failed to load products</h3>
+            <p className="text-muted-foreground">{error.message}</p>
+            <Button variant="outline" className="mt-4" onClick={() => window.location.reload()}>
+              Try Again
+            </Button>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
+                    <TableHead className="font-semibold text-slate-700 py-4">Ingredient Name</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-4">Category</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-4">Status</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-4 w-12"></TableHead>
                   </TableRow>
-                ) : (
-                  products.map((product) => {
-                    const bestPrice = product.price_tiers?.reduce((best, tier) => {
-                      if (!tier.price_per_kg) return best
-                      if (!best || tier.price_per_kg < best) return tier.price_per_kg
-                      return best
-                    }, null as number | null)
-
-                    return (
-                      <TableRow key={product.vendor_ingredient_id}>
-                        <TableCell className="max-w-[300px]">
-                          <div className="truncate font-medium">
-                            {product.raw_product_name || product.variant?.variant_name || '-'}
+                </TableHeader>
+                <TableBody>
+                  {isLoading ? (
+                    Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} />)
+                  ) : ingredients.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="h-40 text-center">
+                        <div className="flex flex-col items-center justify-center">
+                          <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+                            <svg className="h-8 w-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                            </svg>
                           </div>
-                          <div className="text-xs text-muted-foreground truncate">
-                            {product.variant?.ingredient?.name}
-                          </div>
+                          <p className="font-medium text-slate-900 mb-1">No ingredients found</p>
+                          <p className="text-sm text-muted-foreground">Try adjusting your search</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    ingredients.map((ingredient, idx) => (
+                      <TableRow
+                        key={ingredient.ingredient_id}
+                        className={`group transition-colors cursor-pointer ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/50`}
+                        onClick={() => navigate(`/products/${ingredient.ingredient_id}`)}
+                      >
+                        <TableCell className="py-4">
+                          <p className="font-medium text-slate-900 group-hover:text-blue-600 transition-colors">
+                            {ingredient.name}
+                          </p>
                         </TableCell>
-                        <TableCell className="font-mono text-sm">
-                          {product.sku || '-'}
+                        <TableCell className="py-4">
+                          <CategoryBadge category={ingredient.category_name} />
                         </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{product.vendor?.name}</Badge>
+                        <TableCell className="py-4">
+                          <StatusBadge status={ingredient.status} />
                         </TableCell>
-                        <TableCell className="font-medium">
-                          {formatPrice(bestPrice)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={product.status === 'active' ? 'default' : 'secondary'}>
-                            {product.status || 'unknown'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {formatDate(product.last_seen_at)}
+                        <TableCell className="py-4">
+                          <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
                         </TableCell>
                       </TableRow>
-                    )
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
 
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">
-              Showing {page * pageSize + 1} - {page * pageSize + products.length} products
+            {/* Pagination */}
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50/50">
+              <p className="text-sm text-slate-600">
+                Showing <span className="font-semibold text-slate-900">{page * pageSize + 1}</span> to{' '}
+                <span className="font-semibold text-slate-900">{page * pageSize + ingredients.length}</span>
+                {totalCount !== undefined && (
+                  <> of <span className="font-semibold text-slate-900">{totalCount.toLocaleString()}</span></>
+                )}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="gap-1"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                  Previous
+                </Button>
+                <div className="flex items-center gap-1 px-2">
+                  <span className="text-sm text-slate-600">Page</span>
+                  <span className="text-sm font-semibold text-slate-900 bg-white px-2 py-1 rounded border">{page + 1}</span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={ingredients.length < pageSize}
+                  className="gap-1"
+                >
+                  Next
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </Button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPage((p) => p + 1)}
-                disabled={products.length < pageSize}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </Card>
     </div>
   )
 }

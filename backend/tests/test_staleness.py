@@ -10,7 +10,7 @@ class TestMarkStaleVariants:
     """Test full-scrape staleness marking."""
 
     def test_marks_old_variants_inactive_bs(self, sqlite_conn):
-        """BulkSupplements: Variants with old last_seen_at marked inactive."""
+        """BulkSupplements: Variants with old last_seen_at marked stale."""
         from bulksupplements_scraper import mark_stale_variants
 
         cursor = sqlite_conn.cursor()
@@ -23,15 +23,15 @@ class TestMarkStaleVariants:
         sqlite_conn.commit()
 
         # Run staleness check with recent time
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=4,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=4,
                                           scrape_start_time='2025-01-01T00:00:00')
 
-        assert stale_count == 1
+        assert len(stale_variants) == 1
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('OLD-SKU',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
     def test_marks_old_variants_inactive_boxnutra(self, sqlite_conn):
-        """BoxNutra: Variants with old last_seen_at marked inactive."""
+        """BoxNutra: Variants with old last_seen_at marked stale."""
         from boxnutra_scraper import mark_stale_variants
 
         cursor = sqlite_conn.cursor()
@@ -42,12 +42,12 @@ class TestMarkStaleVariants:
         ''')
         sqlite_conn.commit()
 
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=25,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=25,
                                           scrape_start_time='2025-01-01T00:00:00')
 
-        assert stale_count == 1
+        assert len(stale_variants) == 1
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('BN-OLD-SKU',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
     def test_marks_old_variants_inactive_trafapharma(self, sqlite_conn):
         """TrafaPharma: Variants with old last_seen_at marked inactive."""
@@ -92,7 +92,7 @@ class TestMarkStaleVariants:
         assert cursor.fetchone()[0] == 'active'
 
     def test_null_last_seen_at_marked_inactive(self, sqlite_conn):
-        """Variants with NULL last_seen_at are marked inactive."""
+        """Variants with NULL last_seen_at are marked stale."""
         from bulksupplements_scraper import mark_stale_variants
 
         cursor = sqlite_conn.cursor()
@@ -106,7 +106,7 @@ class TestMarkStaleVariants:
         mark_stale_variants(sqlite_conn, vendor_id=4, scrape_start_time='2025-01-01T00:00:00')
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('NULL-TIME-SKU',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
     def test_only_affects_specified_vendor(self, sqlite_conn):
         """Staleness check scoped to vendor_id."""
@@ -125,13 +125,13 @@ class TestMarkStaleVariants:
         mark_stale_variants(sqlite_conn, vendor_id=4, scrape_start_time='2025-01-01')
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('BS-OLD',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('BN-OLD',))
         assert cursor.fetchone()[0] == 'active'  # BoxNutra unaffected
 
     def test_already_inactive_not_double_counted(self, sqlite_conn):
-        """Already inactive variants not counted in stale_count."""
+        """Already inactive variants not counted in stale_variants."""
         from bulksupplements_scraper import mark_stale_variants
 
         cursor = sqlite_conn.cursor()
@@ -141,9 +141,9 @@ class TestMarkStaleVariants:
         ''')
         sqlite_conn.commit()
 
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=4,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=4,
                                           scrape_start_time='2025-01-01')
-        assert stale_count == 0  # Already inactive, not counted
+        assert len(stale_variants) == 0  # Already inactive, not counted
 
     def test_multiple_stale_variants(self, sqlite_conn):
         """Multiple variants marked stale in single call."""
@@ -157,16 +157,16 @@ class TestMarkStaleVariants:
             ''', (i, f'OLD-SKU-{i}'))
         sqlite_conn.commit()
 
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=4,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=4,
                                           scrape_start_time='2025-01-01')
-        assert stale_count == 5
+        assert len(stale_variants) == 5
 
 
 class TestMarkMissingVariantsForProduct:
     """Test per-product variant staleness (variant removed but product exists)."""
 
     def test_marks_missing_sku_inactive_boxnutra(self, sqlite_conn):
-        """BoxNutra: SKUs not in seen_skus list marked inactive."""
+        """BoxNutra: SKUs not in seen_skus list marked stale."""
         from boxnutra_scraper import mark_missing_variants_for_product
 
         cursor = sqlite_conn.cursor()
@@ -186,7 +186,7 @@ class TestMarkMissingVariantsForProduct:
                                           scrape_time=datetime.now().isoformat())
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-1KG',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-100G',))
         assert cursor.fetchone()[0] == 'active'
@@ -255,7 +255,7 @@ class TestMarkMissingVariantsForProduct:
                                           scrape_time=datetime.now().isoformat())
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-A-100G',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-B-100G',))
         assert cursor.fetchone()[0] == 'active'  # Different variant_id, unaffected
@@ -317,13 +317,13 @@ class TestStalenessIntegration:
         sqlite_conn.commit()
 
         # Mark stale
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=4,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=4,
                                           scrape_start_time=scrape2_time)
 
-        assert stale_count == 1  # PROD-C marked stale
+        assert len(stale_variants) == 1  # PROD-C marked stale
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-C',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('PROD-A',))
         assert cursor.fetchone()[0] == 'active'

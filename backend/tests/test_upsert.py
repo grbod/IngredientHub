@@ -23,7 +23,7 @@ class TestUpsertVendorIngredient:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(
+        result = upsert_vendor_ingredient(
             sqlite_conn,
             vendor_id=4,
             variant_id=100,
@@ -31,6 +31,7 @@ class TestUpsertVendorIngredient:
             raw_name='Test Product',
             source_id=source_id
         )
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('''
             SELECT vendor_id, variant_id, sku, raw_product_name, status, last_seen_at
@@ -57,7 +58,7 @@ class TestUpsertVendorIngredient:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(
+        result = upsert_vendor_ingredient(
             sqlite_conn,
             vendor_id=25,
             variant_id=200,
@@ -65,6 +66,7 @@ class TestUpsertVendorIngredient:
             raw_name='BoxNutra Test Product',
             source_id=source_id
         )
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('''
             SELECT vendor_id, variant_id, sku, raw_product_name, status, last_seen_at
@@ -126,8 +128,10 @@ class TestUpsertVendorIngredient:
         source_id2 = cursor.lastrowid
         sqlite_conn.commit()
 
-        id1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-A', 'Name V1', source_id1)
-        id2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-A', 'Name V2', source_id2)
+        result1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-A', 'Name V1', source_id1)
+        result2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-A', 'Name V2', source_id2)
+        id1 = result1.vendor_ingredient_id
+        id2 = result2.vendor_ingredient_id
 
         assert id1 == id2
 
@@ -174,13 +178,15 @@ class TestUpsertVendorIngredient:
         sqlite_conn.commit()
 
         # Create and manually set to inactive
-        vi_id = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-INACTIVE', 'Old', source_id)
+        result1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-INACTIVE', 'Old', source_id)
+        vi_id = result1.vendor_ingredient_id
         cursor.execute('UPDATE vendoringredients SET status = ? WHERE vendor_ingredient_id = ?',
                       ('inactive', vi_id))
         sqlite_conn.commit()
 
         # Upsert again - should reset to active
-        vi_id2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-INACTIVE', 'Renewed', source_id)
+        result2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-INACTIVE', 'Renewed', source_id)
+        vi_id2 = result2.vendor_ingredient_id
 
         cursor.execute('SELECT status FROM vendoringredients WHERE vendor_ingredient_id = ?', (vi_id2,))
         assert cursor.fetchone()[0] == 'active'
@@ -197,8 +203,10 @@ class TestUpsertVendorIngredient:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        id1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-100G', 'Product 100g', source_id)
-        id2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-500G', 'Product 500g', source_id)
+        result1 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-100G', 'Product 100g', source_id)
+        result2 = upsert_vendor_ingredient(sqlite_conn, 4, 100, 'SKU-500G', 'Product 500g', source_id)
+        id1 = result1.vendor_ingredient_id
+        id2 = result2.vendor_ingredient_id
 
         assert id1 != id2  # Different SKU = different vendor_ingredient
 

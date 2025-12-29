@@ -940,8 +940,21 @@ def save_to_relational_tables(conn, rows: List[Dict],
     for row in rows:
         product_id = row.get('product_id')
         size_id = row.get('size_id') or 'default'
-        # Generate SKU from product_id and size_id
-        sku = f"{product_id}-{size_id}"
+        # Generate SKU from product_code + formatted size (e.g., "RM2154-1kg")
+        code = row.get('product_code') or product_id or 'unknown'
+        size_kg = row.get('size_kg')
+        if size_kg:
+            # Format size: use grams if < 1kg, otherwise kg
+            if size_kg < 1:
+                grams = int(size_kg * 1000)
+                size_str = f"{grams}g"
+            else:
+                # Use int if whole number, otherwise 1 decimal
+                kg_val = int(size_kg) if size_kg == int(size_kg) else round(size_kg, 1)
+                size_str = f"{kg_val}kg"
+        else:
+            size_str = size_id  # Fallback to size_id if no kg value
+        sku = f"{code}-{size_str}"
         seen_skus.append(sku)
 
         size_kg = row.get('size_kg') or 0

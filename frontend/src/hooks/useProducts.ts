@@ -7,23 +7,8 @@ export interface ProductWithDetails {
   raw_product_name: string | null
   status: string | null
   last_seen_at: string | null
-  vendor: {
-    vendor_id: number
-    name: string
-  }
-  variant: {
-    variant_id: number
-    variant_name: string
-    ingredient: {
-      ingredient_id: number
-      name: string
-    }
-  }
-  price_tiers: {
-    price: number
-    price_per_kg: number | null
-    min_quantity: number | null
-  }[]
+  vendor_id: number
+  vendor_name?: string
 }
 
 interface UseProductsOptions {
@@ -34,28 +19,16 @@ interface UseProductsOptions {
 }
 
 export function useProducts(options: UseProductsOptions = {}) {
-  const { vendorId, search, limit = 100, offset = 0 } = options
+  const { vendorId, search, limit = 50, offset = 0 } = options
 
   return useQuery({
     queryKey: ['products', { vendorId, search, limit, offset }],
     queryFn: async () => {
+      // First get products
       let query = supabase
         .from('vendoringredients')
-        .select(`
-          vendor_ingredient_id,
-          sku,
-          raw_product_name,
-          status,
-          last_seen_at,
-          vendor:vendors!inner(vendor_id, name),
-          variant:ingredientvariants!inner(
-            variant_id,
-            variant_name,
-            ingredient:ingredients!inner(ingredient_id, name)
-          ),
-          price_tiers:pricetiers(price, price_per_kg, min_quantity)
-        `)
-        .order('last_seen_at', { ascending: false })
+        .select('vendor_ingredient_id, sku, raw_product_name, status, last_seen_at, vendor_id')
+        .order('last_seen_at', { ascending: false, nullsFirst: false })
         .range(offset, offset + limit - 1)
 
       if (vendorId) {
@@ -66,10 +39,20 @@ export function useProducts(options: UseProductsOptions = {}) {
         query = query.or(`raw_product_name.ilike.%${search}%,sku.ilike.%${search}%`)
       }
 
-      const { data, error, count } = await query
+      const { data: products, error } = await query
 
       if (error) throw error
-      return { data: data as unknown as ProductWithDetails[], count }
+
+      // Get vendor names
+      const { data: vendors } = await supabase.from('vendors').select('vendor_id, name')
+      const vendorMap = new Map(vendors?.map(v => [v.vendor_id, v.name]) || [])
+
+      const enrichedProducts = (products || []).map(p => ({
+        ...p,
+        vendor_name: vendorMap.get(p.vendor_id) || 'Unknown'
+      }))
+
+      return { data: enrichedProducts as ProductWithDetails[], count: products?.length || 0 }
     },
   })
 }
