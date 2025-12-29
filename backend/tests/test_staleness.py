@@ -61,12 +61,12 @@ class TestMarkStaleVariants:
         ''')
         sqlite_conn.commit()
 
-        stale_count = mark_stale_variants(sqlite_conn, vendor_id=26,
+        stale_variants = mark_stale_variants(sqlite_conn, vendor_id=26,
                                           scrape_start_time='2025-01-01T00:00:00')
 
-        assert stale_count == 1
+        assert len(stale_variants) == 1
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('TP-OLD-SKU',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
     def test_keeps_recent_variants_active(self, sqlite_conn):
         """Variants seen in current scrape stay active."""
@@ -212,7 +212,7 @@ class TestMarkMissingVariantsForProduct:
                                           scrape_time=datetime.now().isoformat())
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('889-3',))
-        assert cursor.fetchone()[0] == 'inactive'
+        assert cursor.fetchone()[0] == 'stale'
 
         cursor.execute('SELECT status FROM vendoringredients WHERE sku = ?', ('889-1',))
         assert cursor.fetchone()[0] == 'active'

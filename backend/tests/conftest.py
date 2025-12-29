@@ -88,6 +88,7 @@ def setup_test_schema(conn):
             current_source_id INTEGER,
             last_seen_at TEXT,
             status TEXT DEFAULT 'active',
+            stale_since TEXT,
             UNIQUE(vendor_id, variant_id, sku)
         );
 
@@ -301,6 +302,7 @@ def setup_test_schema_postgres(conn):
             current_source_id INTEGER,
             last_seen_at TEXT,
             status TEXT DEFAULT 'active',
+            stale_since TEXT,
             UNIQUE(vendor_id, variant_id, sku)
         )
     ''')

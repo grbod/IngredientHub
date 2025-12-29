@@ -10,24 +10,32 @@ Scrapers for B2B wholesale ingredient marketplaces:
 ## Project Structure
 ```
 /IOscraper/
-├── IO_scraper.py                   # IngredientsOnline scraper (GraphQL API)
-├── bulksupplements_scraper.py      # BulkSupplements scraper (Shopify JSON)
-├── boxnutra_scraper.py             # BoxNutra scraper (Shopify JSON + HTML)
-├── trafapharma_scraper.py          # TrafaPharma scraper (HTML parsing)
-├── .env                            # Credentials (not in git)
-├── venv/                           # Python virtual environment
-├── ingredients.db                  # SQLite fallback (if no Supabase)
-└── CLAUDE.md                       # This file
+├── backend/
+│   ├── IO_scraper.py               # IngredientsOnline scraper (GraphQL API)
+│   ├── bulksupplements_scraper.py  # BulkSupplements scraper (Shopify JSON)
+│   ├── boxnutra_scraper.py         # BoxNutra scraper (Shopify JSON + HTML)
+│   ├── trafapharma_scraper.py      # TrafaPharma scraper (HTML parsing)
+│   ├── app.py                      # Streamlit frontend (legacy)
+│   ├── .env                        # Credentials (not in git)
+│   ├── venv/                       # Python virtual environment
+│   ├── ingredients.db              # SQLite fallback (if no Supabase)
+│   ├── tests/                      # Pytest test suite
+│   └── output/                     # CSV/JSON output files (not in git)
+├── frontend/                       # React frontend (coming soon)
+├── CLAUDE.md                       # This file
+└── .gitignore
 ```
 
 ## Environment Setup
 ```bash
+cd backend
+
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate
 
 # Install dependencies
-pip install pandas requests psycopg2-binary playwright beautifulsoup4
+pip install pandas requests psycopg2-binary playwright beautifulsoup4 python-dotenv
 
 # Create .env file with credentials
 cat > .env << 'EOF'
@@ -39,6 +47,10 @@ EOF
 
 ## Usage Examples
 ```bash
+# All commands run from backend/ directory
+cd backend
+source venv/bin/activate
+
 # IO scraper - full run
 python IO_scraper.py
 
@@ -62,6 +74,9 @@ python trafapharma_scraper.py
 
 # TrafaPharma scraper - limited test run
 python trafapharma_scraper.py --max-products 50
+
+# Run tests
+pytest tests/
 ```
 
 ## Database
@@ -382,6 +397,8 @@ No authentication required.
 
 ### Scraper Usage
 ```bash
+cd backend && source venv/bin/activate
+
 # Full run
 python boxnutra_scraper.py
 
@@ -412,6 +429,8 @@ Custom PHP site (likely CodeIgniter) with server-side rendering. **No REST/JSON 
 
 ### Scraper Usage
 ```bash
+cd backend && source venv/bin/activate
+
 # Full run
 python trafapharma_scraper.py
 

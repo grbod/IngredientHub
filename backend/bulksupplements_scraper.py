@@ -45,7 +45,7 @@ MAX_RETRY_DELAY = 60
 
 # Checkpoint configuration
 CHECKPOINT_INTERVAL = 25
-CHECKPOINT_FILE = ".bulksupplements_checkpoint.json"
+CHECKPOINT_FILE = "output/.bulksupplements_checkpoint.json"
 
 # Request headers
 HEADERS = {
@@ -1253,7 +1253,7 @@ def scrape_product(handle: str, session: requests.Session) -> List[Dict]:
 # Main
 # =============================================================================
 
-def save_to_csv(data: List[Dict], output_dir: str = ".") -> str:
+def save_to_csv(data: List[Dict], output_dir: str = "output") -> str:
     """Save scraped data to a timestamped CSV file."""
     if not data:
         print("No data to save")
@@ -1296,6 +1296,9 @@ def main():
     parser.add_argument('--max-products', type=int, default=None,
                         help='Maximum products to scrape (for testing)')
     args = parser.parse_args()
+
+    # Ensure output directory exists
+    os.makedirs("output", exist_ok=True)
 
     print("=" * 60, flush=True)
     print("BulkSupplements.com Product Scraper", flush=True)

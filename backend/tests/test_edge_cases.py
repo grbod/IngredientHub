@@ -115,7 +115,8 @@ class TestTrafaPharmaEdgeCases:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(sqlite_conn, 26, 300, '123-1', 'Product', source_id)
+        result = upsert_vendor_ingredient(sqlite_conn, 26, 300, '123-1', 'Product', source_id)
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('SELECT shipping_responsibility FROM vendoringredients WHERE vendor_ingredient_id = ?', (vi_id,))
         assert cursor.fetchone()[0] == 'buyer'

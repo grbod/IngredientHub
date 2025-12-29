@@ -61,7 +61,7 @@ MAX_RETRY_DELAY = 32    # Maximum delay for exponential backoff
 TOKEN_REFRESH_INTERVAL = 2700  # Refresh token after 45 minutes (before 1hr expiry)
 
 # Checkpointing settings
-CHECKPOINT_FILE = "scraper_checkpoint.json"
+CHECKPOINT_FILE = "output/scraper_checkpoint.json"
 CHECKPOINT_INTERVAL = 25  # Save checkpoint every N products
 
 # Database settings
@@ -1360,7 +1360,7 @@ def clear_checkpoint() -> None:
 # Failed Products Logging
 # =============================================================================
 
-def save_failed_products(failed: List[Dict], output_dir: str = ".") -> str:
+def save_failed_products(failed: List[Dict], output_dir: str = "output") -> str:
     """Save failed products to JSON file for later review/retry."""
     if not failed:
         return ""
@@ -2224,7 +2224,7 @@ def process_product(product: Dict) -> List[Dict]:
     return rows
 
 
-def save_to_csv(data: List[Dict], output_dir: str = ".", output_file: str = None) -> str:
+def save_to_csv(data: List[Dict], output_dir: str = "output", output_file: str = None) -> str:
     """
     Save scraped data to a CSV file.
     If output_file is provided, uses that filename. Otherwise generates timestamped name.
@@ -2284,6 +2284,9 @@ def main():
     parser.add_argument('--no-playwright', action='store_true',
                         help='Disable Playwright fallback (faster startup, API-only)')
     args = parser.parse_args()
+
+    # Ensure output directory exists
+    os.makedirs("output", exist_ok=True)
 
     print("=" * 60)
     print("IngredientsOnline.com Pricing Scraper (GraphQL API)")

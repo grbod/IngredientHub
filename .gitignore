@@ -1,20 +1,31 @@
-# Virtual environment
-venv/
+# Backend
+backend/venv/
+backend/.env
+backend/output/
+backend/ingredients.db
 
-# Environment file with credentials
-.env
+# Frontend
+frontend/.env
+frontend/dist/
+frontend/node_modules/
 
-# Output data files
-pricing_data_*.csv
-
-# Checkpoint and discovery files
-.scrape_checkpoint.json
-discovered_urls.txt
+# Checkpoint files (in case they're outside output/)
+backend/.*.checkpoint.json
+backend/scraper_checkpoint.json
 
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # OS
 .DS_Store
+
+# IDE/Editor
 .mcp.json
+.claude/
+
+# Legacy patterns (root level, if any remain)
+pricing_data_*.csv
+.scrape_checkpoint.json
+discovered_urls.txt

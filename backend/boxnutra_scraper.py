@@ -52,7 +52,7 @@ MAX_RETRY_DELAY = 30
 
 # Checkpoint configuration
 CHECKPOINT_INTERVAL = 10
-CHECKPOINT_FILE = ".boxnutra_checkpoint.json"
+CHECKPOINT_FILE = "output/.boxnutra_checkpoint.json"
 
 # Request headers
 HEADERS = {
@@ -648,7 +648,7 @@ def scrape_product(handle: str, session: requests.Session) -> List[Dict]:
 # CSV Output
 # =============================================================================
 
-def save_to_csv(data: List[Dict], output_dir: str = ".") -> str:
+def save_to_csv(data: List[Dict], output_dir: str = "output") -> str:
     """Save scraped data to a timestamped CSV file."""
     if not data:
         print("No data to save")
@@ -1130,7 +1130,7 @@ def save_to_database(db_conn: DatabaseConnection, data: List[Dict]) -> int:
     return db_conn.execute_with_retry(_save, data)
 
 
-def save_skipped_log(output_dir: str = ".") -> str:
+def save_skipped_log(output_dir: str = "output") -> str:
     """Save skipped products log for review."""
     if not skipped_products:
         return ""
@@ -1176,9 +1176,12 @@ def main():
     parser = argparse.ArgumentParser(description='Scrape BoxNutra.com products')
     parser.add_argument('--max-products', type=int, help='Maximum products to scrape')
     parser.add_argument('--resume', action='store_true', help='Resume from checkpoint')
-    parser.add_argument('--output-dir', default='.', help='Output directory for CSV')
+    parser.add_argument('--output-dir', default='output', help='Output directory for CSV')
     parser.add_argument('--no-db', action='store_true', help='Skip database save (CSV only)')
     args = parser.parse_args()
+
+    # Ensure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
 
     print("=" * 60)
     print("BoxNutra.com Product Scraper")

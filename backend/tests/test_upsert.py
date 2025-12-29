@@ -89,7 +89,7 @@ class TestUpsertVendorIngredient:
         source_id = cursor.lastrowid
         sqlite_conn.commit()
 
-        vi_id = upsert_vendor_ingredient(
+        result = upsert_vendor_ingredient(
             sqlite_conn,
             vendor_id=26,
             variant_id=300,
@@ -97,6 +97,7 @@ class TestUpsertVendorIngredient:
             raw_name='TrafaPharma Test Product',
             source_id=source_id
         )
+        vi_id = result.vendor_ingredient_id
 
         cursor.execute('''
             SELECT vendor_id, variant_id, sku, status
