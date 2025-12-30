@@ -10,18 +10,21 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card } from '@/components/ui/card'
+
+const vendorFilters = [
+  { name: 'IngredientsOnline', color: 'bg-sky-500' },
+  { name: 'BulkSupplements', color: 'bg-emerald-500' },
+  { name: 'BoxNutra', color: 'bg-violet-500' },
+  { name: 'TrafaPharma', color: 'bg-amber-500' },
+]
 
 function CategoryBadge({ category }: { category: string | null }) {
   if (!category) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-        Uncategorized
-      </span>
-    )
+    return <span className="text-xs text-slate-400">—</span>
   }
   return (
-    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
       {category}
     </span>
   )
@@ -47,8 +50,8 @@ function SkeletonRow() {
   return (
     <TableRow>
       <TableCell><div className="h-4 bg-muted rounded animate-pulse w-3/4"></div></TableCell>
+      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-24"></div></TableCell>
       <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-28"></div></TableCell>
-      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-32"></div></TableCell>
       <TableCell><div className="h-4 bg-muted rounded animate-pulse w-4"></div></TableCell>
     </TableRow>
   )
@@ -62,6 +65,7 @@ export function Products() {
   // Read state from URL query params
   const page = Math.max(0, parseInt(searchParams.get('page') || '0', 10))
   const search = searchParams.get('search') || ''
+  const vendorFilter = searchParams.get('vendor') || ''
 
   // Update URL when page changes
   const setPage = (newPage: number) => {
@@ -72,9 +76,23 @@ export function Products() {
 
   // Update URL when search changes (resets page to 0)
   const handleSearchChange = (newSearch: string) => {
-    const params = new URLSearchParams()
+    const params = new URLSearchParams(searchParams)
     if (newSearch) {
       params.set('search', newSearch)
+    } else {
+      params.delete('search')
+    }
+    params.set('page', '0')
+    setSearchParams(params, { replace: true })
+  }
+
+  // Update URL when vendor filter changes
+  const handleVendorFilter = (vendor: string) => {
+    const params = new URLSearchParams(searchParams)
+    if (vendorFilter === vendor) {
+      params.delete('vendor')
+    } else {
+      params.set('vendor', vendor)
     }
     params.set('page', '0')
     setSearchParams(params, { replace: true })
@@ -87,10 +105,14 @@ export function Products() {
     offset: page * pageSize,
   })
 
-  const ingredients = data?.data || []
+  // Filter by vendor on client side (could be moved to API)
+  let ingredients = data?.data || []
+  if (vendorFilter) {
+    ingredients = ingredients.filter(i => i.vendors?.includes(vendorFilter))
+  }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header */}
       <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
         <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
@@ -114,24 +136,59 @@ export function Products() {
         </div>
       </div>
 
-      {/* Search */}
-      <Card className="border-0 shadow-lg shadow-slate-200/50">
-        <CardContent className="p-6">
-          <div className="relative">
-            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </div>
-            <Input
-              placeholder="Search ingredients..."
-              value={search}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="pl-11 h-12 text-base border-slate-200 focus:border-slate-400 focus:ring-slate-400"
-            />
+      {/* Search and Filters */}
+      <div className="space-y-3">
+        <div className="relative">
+          <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
           </div>
-        </CardContent>
-      </Card>
+          <Input
+            placeholder="Search ingredients..."
+            value={search}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="pl-12 h-12 text-base bg-white border-slate-200 focus:border-blue-400 focus:ring-blue-400 shadow-sm"
+          />
+          {search && (
+            <button
+              onClick={() => handleSearchChange('')}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        {/* Vendor Filter Chips */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-500">Filter:</span>
+          {vendorFilters.map(v => (
+            <button
+              key={v.name}
+              onClick={() => handleVendorFilter(v.name)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                vendorFilter === v.name
+                  ? 'bg-slate-900 text-white shadow-md'
+                  : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${v.color}`}></span>
+              {v.name}
+            </button>
+          ))}
+          {vendorFilter && (
+            <button
+              onClick={() => handleVendorFilter(vendorFilter)}
+              className="text-xs text-slate-500 hover:text-slate-700 underline ml-1"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Table */}
       <Card className="border-0 shadow-lg shadow-slate-200/50 overflow-hidden">
@@ -154,10 +211,10 @@ export function Products() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
-                    <TableHead className="font-semibold text-slate-700 py-4">Ingredient Name</TableHead>
-                    <TableHead className="font-semibold text-slate-700 py-4">Category</TableHead>
-                    <TableHead className="font-semibold text-slate-700 py-4">Vendors</TableHead>
-                    <TableHead className="font-semibold text-slate-700 py-4 w-12"></TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-3">Ingredient Name</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-3">Category</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-3">Vendors</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-3 w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -173,7 +230,7 @@ export function Products() {
                             </svg>
                           </div>
                           <p className="font-medium text-slate-900 mb-1">No ingredients found</p>
-                          <p className="text-sm text-muted-foreground">Try adjusting your search</p>
+                          <p className="text-sm text-muted-foreground">Try adjusting your search or filters</p>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -181,30 +238,30 @@ export function Products() {
                     ingredients.map((ingredient, idx) => (
                       <TableRow
                         key={ingredient.ingredient_id}
-                        className={`group transition-colors cursor-pointer ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/50`}
+                        className={`group transition-colors cursor-pointer ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50/50`}
                         onClick={() => navigate(`/products/${ingredient.ingredient_id}`)}
                       >
-                        <TableCell className="py-4">
+                        <TableCell className="py-3">
                           <p className="font-medium text-slate-900 group-hover:text-blue-600 transition-colors">
                             {ingredient.name}
                           </p>
                         </TableCell>
-                        <TableCell className="py-4">
+                        <TableCell className="py-3">
                           <CategoryBadge category={ingredient.category_name} />
                         </TableCell>
-                        <TableCell className="py-4">
+                        <TableCell className="py-3">
                           <div className="flex flex-wrap gap-1">
                             {ingredient.vendors && ingredient.vendors.length > 0 ? (
                               ingredient.vendors.map((vendor) => (
                                 <VendorBadge key={vendor} vendor={vendor} />
                               ))
                             ) : (
-                              <span className="text-xs text-slate-400">-</span>
+                              <span className="text-xs text-slate-400">—</span>
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="py-4">
-                          <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <TableCell className="py-3">
+                          <svg className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                           </svg>
                         </TableCell>
@@ -216,7 +273,7 @@ export function Products() {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50/50">
+            <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50/50">
               <p className="text-sm text-slate-600">
                 Showing <span className="font-semibold text-slate-900">{page * pageSize + 1}</span> to{' '}
                 <span className="font-semibold text-slate-900">{page * pageSize + ingredients.length}</span>
@@ -228,9 +285,9 @@ export function Products() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  onClick={() => setPage(Math.max(0, page - 1))}
                   disabled={page === 0}
-                  className="gap-1"
+                  className="gap-1 h-8"
                 >
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -238,15 +295,14 @@ export function Products() {
                   Previous
                 </Button>
                 <div className="flex items-center gap-1 px-2">
-                  <span className="text-sm text-slate-600">Page</span>
-                  <span className="text-sm font-semibold text-slate-900 bg-white px-2 py-1 rounded border">{page + 1}</span>
+                  <span className="text-sm font-medium text-slate-900 bg-white px-2.5 py-1 rounded border border-slate-200">{page + 1}</span>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => p + 1)}
+                  onClick={() => setPage(page + 1)}
                   disabled={ingredients.length < pageSize}
-                  className="gap-1"
+                  className="gap-1 h-8"
                 >
                   Next
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -110,23 +110,40 @@ export function PriceComparison() {
   }, [comparisons, showMultiVendorOnly, sortBy])
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Price Comparison</h1>
-          <p className="text-sm text-slate-500">
-            Find the best $/kg across {vendorNames.length} vendors
-          </p>
+    <div className="space-y-6">
+      {/* Hero Header */}
+      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+        <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
+        <div className="relative">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-white/10 backdrop-blur">
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                  </svg>
+                </div>
+                <h1 className="text-3xl font-bold text-white tracking-tight">Price Comparison</h1>
+              </div>
+              <p className="text-slate-300 max-w-2xl">
+                Find the best $/kg across {vendorNames.length} vendors
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-500/20 text-green-300 font-medium border border-green-500/30">
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                Best
+              </span>
+              <span className="text-slate-400">= lowest $/kg</span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-green-100 text-green-700 font-medium">
-            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-            </svg>
-            Best
-          </span>
-          <span className="text-slate-400">= lowest $/kg</span>
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 opacity-10">
+          <svg className="w-32 h-32 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+          </svg>
         </div>
       </div>
 
@@ -400,20 +417,8 @@ export function PriceComparison() {
 
                   return (
                     <div key={vendorName} className="border rounded-lg overflow-hidden">
-                      <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm flex justify-between items-center`}>
+                      <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm`}>
                         <span>{vendorName}</span>
-                        {simpleInv && (
-                          <span className={`text-xs px-2 py-0.5 rounded ${
-                            simpleInv.stock_status === 'in_stock'
-                              ? 'bg-green-500/30'
-                              : simpleInv.stock_status === 'out_of_stock'
-                              ? 'bg-red-500/30'
-                              : 'bg-white/20'
-                          }`}>
-                            {simpleInv.stock_status === 'in_stock' ? 'In Stock' :
-                             simpleInv.stock_status === 'out_of_stock' ? 'Out of Stock' : 'Unknown'}
-                          </span>
-                        )}
                       </div>
                       <div className="p-3">
                         <table className="w-full text-sm">
@@ -423,23 +428,55 @@ export function PriceComparison() {
                               {isIO && <th className="text-right pb-2 font-medium">Min Qty</th>}
                               <th className="text-right pb-2 font-medium">Price</th>
                               <th className="text-right pb-2 font-medium">$/kg</th>
+                              <th className="text-right pb-2 font-medium">Stock</th>
                               {tiers.some(t => t.product_url) && <th className="w-8"></th>}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {tiers.map((tier, idx) => (
+                            {tiers.map((tier, idx) => {
+                              // For IO single-tier items, min qty defaults to pack size
+                              const effectiveMinQty = isIO
+                                ? (tier.min_quantity && tier.min_quantity > 1 ? tier.min_quantity : tier.pack_size)
+                                : tier.min_quantity
+                              // For IO single-tier items, show total price ($/kg × pack_size)
+                              const isSingleTierIO = isIO && tiers.length === 1
+                              const displayPrice = isSingleTierIO && tier.price_per_kg && tier.pack_size
+                                ? tier.price_per_kg * tier.pack_size
+                                : tier.price
+
+                              return (
                               <tr key={idx} className="group hover:bg-slate-50">
                                 <td className="py-1.5 text-slate-700">{tier.packaging || '-'}</td>
                                 {isIO && (
                                   <td className="py-1.5 text-right text-slate-600">
-                                    {tier.min_quantity ? `${tier.min_quantity}kg` : '-'}
+                                    {effectiveMinQty ? `${effectiveMinQty}kg` : '-'}
                                   </td>
                                 )}
                                 <td className="py-1.5 text-right font-medium text-slate-900">
-                                  ${tier.price.toFixed(2)}
+                                  ${displayPrice.toFixed(2)}
                                 </td>
                                 <td className="py-1.5 text-right text-slate-600">
                                   {tier.price_per_kg ? `$${tier.price_per_kg.toFixed(2)}` : '-'}
+                                </td>
+                                <td className="py-1.5 text-right">
+                                  {(() => {
+                                    const tierStock = ingredientDetail.simpleInventory.find(
+                                      inv => inv.vendor_ingredient_id === tier.vendor_ingredient_id
+                                    )
+                                    if (!tierStock) return <span className="text-slate-300">-</span>
+                                    return (
+                                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                        tierStock.stock_status === 'in_stock'
+                                          ? 'bg-green-100 text-green-700'
+                                          : tierStock.stock_status === 'out_of_stock'
+                                          ? 'bg-red-100 text-red-700'
+                                          : 'bg-slate-100 text-slate-500'
+                                      }`}>
+                                        {tierStock.stock_status === 'in_stock' ? 'In Stock' :
+                                         tierStock.stock_status === 'out_of_stock' ? 'Out of Stock' : 'Unknown'}
+                                      </span>
+                                    )
+                                  })()}
                                 </td>
                                 {tiers.some(t => t.product_url) && (
                                   <td className="py-1.5 text-right">
@@ -461,7 +498,8 @@ export function PriceComparison() {
                                   </td>
                                 )}
                               </tr>
-                            ))}
+                              )
+                            })}
                           </tbody>
                         </table>
 
