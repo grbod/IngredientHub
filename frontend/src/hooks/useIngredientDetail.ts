@@ -11,6 +11,7 @@ export interface PriceTier {
   min_quantity: number | null
   price: number
   price_per_kg: number | null
+  product_url: string | null
 }
 
 export interface InventoryLevel {
@@ -91,7 +92,7 @@ export function useIngredientDetail(ingredientId: number | undefined) {
       // Get vendor ingredients for these variants
       const { data: vendorIngredients } = await supabase
         .from('vendoringredients')
-        .select('vendor_ingredient_id, vendor_id, variant_id, sku, status')
+        .select('vendor_ingredient_id, vendor_id, variant_id, sku, status, current_source_id')
         .in('variant_id', variantIds)
         .or('status.eq.active,status.is.null')
 
@@ -107,6 +108,23 @@ export function useIngredientDetail(ingredientId: number | undefined) {
       }
 
       const viIds = vendorIngredients.map((vi) => vi.vendor_ingredient_id)
+
+      // Get product URLs from scrapesources
+      const sourceIds = vendorIngredients
+        .filter((vi) => vi.current_source_id != null)
+        .map((vi) => vi.current_source_id as number)
+
+      const sourceUrlMap = new Map<number, string>()
+      if (sourceIds.length > 0) {
+        const { data: sources } = await supabase
+          .from('scrapesources')
+          .select('source_id, product_url')
+          .in('source_id', sourceIds)
+
+        for (const s of sources || []) {
+          sourceUrlMap.set(s.source_id, s.product_url)
+        }
+      }
 
       // Get packaging sizes
       const { data: packaging } = await supabase
@@ -137,6 +155,9 @@ export function useIngredientDetail(ingredientId: number | undefined) {
         if (!vi) continue
 
         const pkg = packagingMap.get(pt.vendor_ingredient_id)
+        const productUrl = vi.current_source_id
+          ? sourceUrlMap.get(vi.current_source_id) || null
+          : null
         priceTierList.push({
           vendor_ingredient_id: pt.vendor_ingredient_id,
           vendor_id: vi.vendor_id,
@@ -147,6 +168,7 @@ export function useIngredientDetail(ingredientId: number | undefined) {
           min_quantity: pt.min_quantity,
           price: pt.price,
           price_per_kg: pt.price_per_kg,
+          product_url: productUrl,
         })
       }
 

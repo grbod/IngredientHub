@@ -1,8 +1,16 @@
 import { useState, useMemo } from 'react'
 import { usePriceComparison } from '@/hooks/usePriceComparison'
 import { useVendors } from '@/hooks/useVendors'
+import { useIngredientDetail } from '@/hooks/useIngredientDetail'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 function formatPrice(price: number | null) {
   if (price === null) return '-'
@@ -22,8 +30,10 @@ export function PriceComparison() {
   const [search, setSearch] = useState('')
   const [showMultiVendorOnly, setShowMultiVendorOnly] = useState(false)
   const [sortBy, setSortBy] = useState<SortOption>('vendors')
+  const [selectedIngredient, setSelectedIngredient] = useState<{ id: number; name: string } | null>(null)
   const { data: vendors } = useVendors()
   const { data: comparisons, isLoading, error } = usePriceComparison(search || undefined)
+  const { data: ingredientDetail, isLoading: isLoadingDetail } = useIngredientDetail(selectedIngredient?.id)
 
   const vendorNames = vendors?.map(v => v.name) || []
 
@@ -313,7 +323,10 @@ export function PriceComparison() {
                             className={`py-1.5 px-3 text-center transition-colors ${showBest ? 'bg-green-100' : ''}`}
                           >
                             {vendor && price !== null ? (
-                              <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => setSelectedIngredient({ id: item.ingredient_id, name: item.ingredient_name })}
+                                className="group flex items-center justify-center gap-1 w-full hover:underline cursor-pointer"
+                              >
                                 {showBest && (
                                   <svg className="w-3.5 h-3.5 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                                     <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -327,7 +340,15 @@ export function PriceComparison() {
                                     +{priceDiffPercent}%
                                   </span>
                                 )}
-                              </div>
+                                <svg
+                                  className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                              </button>
                             ) : (
                               <span className="text-slate-200">-</span>
                             )}
@@ -342,6 +363,149 @@ export function PriceComparison() {
           </div>
         </Card>
       )}
+
+      {/* Product Detail Modal */}
+      <Dialog open={!!selectedIngredient} onOpenChange={(open) => !open && setSelectedIngredient(null)}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-xl">{selectedIngredient?.name}</DialogTitle>
+          </DialogHeader>
+
+          {isLoadingDetail ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin h-8 w-8 border-2 border-slate-200 border-t-slate-600 rounded-full"></div>
+            </div>
+          ) : ingredientDetail ? (
+            <div className="space-y-4">
+              {/* Group price tiers by vendor */}
+              {(() => {
+                const vendorGroups = new Map<string, typeof ingredientDetail.priceTiers>()
+                for (const tier of ingredientDetail.priceTiers) {
+                  const existing = vendorGroups.get(tier.vendor_name) || []
+                  existing.push(tier)
+                  vendorGroups.set(tier.vendor_name, existing)
+                }
+
+                return Array.from(vendorGroups.entries()).map(([vendorName, tiers]) => {
+                  const isIO = vendorName === 'IngredientsOnline'
+                  const style = vendorStyles[vendorName] || { headerBg: 'bg-gray-600' }
+
+                  // Get inventory info
+                  const warehouseInv = ingredientDetail.warehouseInventory.filter(
+                    inv => inv.vendor_name === vendorName
+                  )
+                  const simpleInv = ingredientDetail.simpleInventory.find(
+                    inv => inv.vendor_name === vendorName
+                  )
+
+                  return (
+                    <div key={vendorName} className="border rounded-lg overflow-hidden">
+                      <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm flex justify-between items-center`}>
+                        <span>{vendorName}</span>
+                        {simpleInv && (
+                          <span className={`text-xs px-2 py-0.5 rounded ${
+                            simpleInv.stock_status === 'in_stock'
+                              ? 'bg-green-500/30'
+                              : simpleInv.stock_status === 'out_of_stock'
+                              ? 'bg-red-500/30'
+                              : 'bg-white/20'
+                          }`}>
+                            {simpleInv.stock_status === 'in_stock' ? 'In Stock' :
+                             simpleInv.stock_status === 'out_of_stock' ? 'Out of Stock' : 'Unknown'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-slate-500 text-xs">
+                              <th className="text-left pb-2 font-medium">Size</th>
+                              {isIO && <th className="text-right pb-2 font-medium">Min Qty</th>}
+                              <th className="text-right pb-2 font-medium">Price</th>
+                              <th className="text-right pb-2 font-medium">$/kg</th>
+                              {tiers.some(t => t.product_url) && <th className="w-8"></th>}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {tiers.map((tier, idx) => (
+                              <tr key={idx} className="group hover:bg-slate-50">
+                                <td className="py-1.5 text-slate-700">{tier.packaging || '-'}</td>
+                                {isIO && (
+                                  <td className="py-1.5 text-right text-slate-600">
+                                    {tier.min_quantity ? `${tier.min_quantity}kg` : '-'}
+                                  </td>
+                                )}
+                                <td className="py-1.5 text-right font-medium text-slate-900">
+                                  ${tier.price.toFixed(2)}
+                                </td>
+                                <td className="py-1.5 text-right text-slate-600">
+                                  {tier.price_per_kg ? `$${tier.price_per_kg.toFixed(2)}` : '-'}
+                                </td>
+                                {tiers.some(t => t.product_url) && (
+                                  <td className="py-1.5 text-right">
+                                    {tier.product_url ? (
+                                      <a
+                                        href={tier.product_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 opacity-50 group-hover:opacity-100 transition-all"
+                                        title="Open on vendor site"
+                                      >
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                        </svg>
+                                      </a>
+                                    ) : (
+                                      <span className="w-6 h-6 inline-block"></span>
+                                    )}
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {/* Warehouse inventory for IO */}
+                        {warehouseInv.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <div className="text-xs text-slate-500 mb-2">Warehouse Inventory</div>
+                            <div className="flex flex-wrap gap-2">
+                              {warehouseInv.map((inv, idx) => (
+                                <span
+                                  key={idx}
+                                  className={`text-xs px-2 py-1 rounded ${
+                                    inv.quantity_available > 0
+                                      ? 'bg-green-50 text-green-700'
+                                      : 'bg-slate-100 text-slate-500'
+                                  }`}
+                                >
+                                  {inv.warehouse}: {inv.quantity_available}kg
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              })()}
+
+              <div className="flex justify-end pt-2 border-t">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => window.open(`/products/${selectedIngredient?.id}`, '_blank')}
+                >
+                  Open Full Detail →
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-slate-500">No pricing data available</div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

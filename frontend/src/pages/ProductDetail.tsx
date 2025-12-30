@@ -2,7 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useIngredientDetail } from '@/hooks/useIngredientDetail'
 import type { PriceTier, InventoryLevel, SimpleInventory } from '@/hooks/useIngredientDetail'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
   Table,
   TableBody,
@@ -50,6 +50,24 @@ function StockBadge({ status }: { status: string | null }) {
   return null
 }
 
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      strokeWidth={2}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
+      />
+    </svg>
+  )
+}
+
 // Map warehouse names to state abbreviations
 const WAREHOUSE_TO_STATE: Record<string, string> = {
   'Chino': 'CA',
@@ -84,6 +102,9 @@ interface VendorPricingCardProps {
 }
 
 function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleInventory }: VendorPricingCardProps) {
+  // Detect if this is a tiered pricing vendor (IO) or per-pack vendor (BS/BN/TP)
+  const isIOVendor = vendorName === 'IngredientsOnline'
+
   // Group price tiers by SKU
   const tiersBySku = new Map<string, PriceTier[]>()
   for (const tier of priceTiers) {
@@ -116,6 +137,203 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
 
   const hasWarehouseInventory = vendorWarehouseInv.length > 0
 
+  // Render tiered layout for IO (multiple price tiers per SKU)
+  const renderTieredLayout = () => (
+    <>
+      {Array.from(tiersBySku.entries()).map(([sku, tiers]) => {
+        const firstTier = tiers[0]
+        const skuWarehouseInv = warehouseInvBySku.get(sku) || []
+
+        return (
+          <div key={sku} className="border-b border-slate-100 last:border-b-0">
+            {/* SKU Header */}
+            <div className="px-6 py-3 bg-slate-50/50 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                {firstTier.product_url ? (
+                  <a
+                    href={firstTier.product_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono border border-slate-200 hover:bg-slate-200 hover:text-slate-900 transition-colors"
+                  >
+                    {sku}
+                    <ExternalLinkIcon className="w-3 h-3" />
+                  </a>
+                ) : (
+                  <code className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono border border-slate-200">
+                    {sku}
+                  </code>
+                )}
+                {firstTier.packaging && (
+                  <span className="text-sm text-slate-600">{firstTier.packaging}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Price Tiers Table */}
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-white hover:bg-white">
+                  <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Min Qty</TableHead>
+                  <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Price/Pack</TableHead>
+                  <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Normalized $/kg</TableHead>
+                  {hasWarehouseInventory && (
+                    <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Stock</TableHead>
+                  )}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tiers.map((tier, idx) => (
+                  <TableRow key={idx} className="hover:bg-slate-50/50">
+                    <TableCell className="py-2.5 font-medium text-slate-900">
+                      {tier.min_quantity ? `${tier.min_quantity}kg` : '-'}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-slate-700">
+                      {formatPrice(tier.price)}
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <span className="font-semibold text-slate-900">
+                        {formatPricePerKg(tier.price_per_kg)}
+                      </span>
+                    </TableCell>
+                    {hasWarehouseInventory && idx === 0 && (
+                      <TableCell className="py-2.5" rowSpan={tiers.length}>
+                        {skuWarehouseInv.length > 0 ? (
+                          <div className="space-y-1">
+                            {skuWarehouseInv
+                              .filter(inv => inv.quantity_available > 0)
+                              .sort((a, b) => b.quantity_available - a.quantity_available)
+                              .map((inv, i) => {
+                                const state = WAREHOUSE_TO_STATE[inv.warehouse] || inv.warehouse
+                                return (
+                                  <div key={i} className="flex items-center gap-2 text-sm">
+                                    <span className="font-medium text-green-600">
+                                      {Math.round(inv.quantity_available).toLocaleString()} kg
+                                    </span>
+                                    <span className="text-slate-400">({state})</span>
+                                  </div>
+                                )
+                              })}
+                          </div>
+                        ) : (
+                          <span className="text-red-500 text-sm">Out of Stock</span>
+                        )}
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )
+      })}
+    </>
+  )
+
+  // Render flat layout for BS/BN/TP (one row per variant, consolidated table)
+  const renderFlatLayout = () => {
+    // Get all variants sorted by pack_size
+    const allVariants = Array.from(tiersBySku.entries())
+      .map(([sku, tiers]) => ({ sku, tier: tiers[0] }))
+      .sort((a, b) => (a.tier.pack_size || 0) - (b.tier.pack_size || 0))
+
+    // Helper to format SKU display - convert ugly SKUs to size-based format
+    const formatSkuDisplay = (sku: string, packaging: string | null): string => {
+      // If SKU looks good, use it
+      if (sku && sku !== 'unknown' && !sku.startsWith('None-') && !sku.startsWith('null-')) {
+        return sku
+      }
+      // Otherwise, construct from packaging (e.g., "100 grams" -> "100g")
+      if (packaging) {
+        // Extract size and convert to compact format
+        const match = packaging.match(/^([\d.]+)\s*(grams?|g|kg|kgs?|lb|lbs?|oz)/i)
+        if (match) {
+          const num = match[1]
+          const unit = match[2].toLowerCase()
+            .replace('grams', 'g').replace('gram', 'g')
+            .replace('kgs', 'kg')
+            .replace('lbs', 'lb')
+          return `${num}${unit}`
+        }
+        // For text like "Bulk Price" or "25kgs", just use as-is
+        return packaging
+      }
+      return '-'
+    }
+
+    // Check if any SKU has a good display value (not derived from packaging)
+    const hasRealSkus = allVariants.some(({ sku }) =>
+      sku && sku !== 'unknown' && !sku.startsWith('None-') && !sku.startsWith('null-')
+    )
+
+    // Column header: "SKU" if real SKUs exist, "Size" if showing derived sizes
+    const skuColumnLabel = hasRealSkus ? 'SKU' : 'Size'
+
+    return (
+      <Table>
+        <TableHeader>
+          <TableRow className="bg-white hover:bg-white">
+            <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">{skuColumnLabel}</TableHead>
+            {hasRealSkus && (
+              <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Pack Size</TableHead>
+            )}
+            <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Price</TableHead>
+            <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Normalized $/kg</TableHead>
+            <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Stock</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {allVariants.map(({ sku, tier }, idx) => {
+            const skuSimpleInv = simpleInvBySku.get(sku)
+            const displaySku = formatSkuDisplay(sku, tier.packaging)
+
+            return (
+              <TableRow key={sku} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}>
+                <TableCell className="py-2.5">
+                  {tier.product_url ? (
+                    <a
+                      href={tier.product_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono border border-slate-200 hover:bg-slate-200 hover:text-slate-900 transition-colors"
+                    >
+                      {displaySku}
+                      <ExternalLinkIcon className="w-3 h-3" />
+                    </a>
+                  ) : (
+                    <code className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono border border-slate-200">
+                      {displaySku}
+                    </code>
+                  )}
+                </TableCell>
+                {hasRealSkus && (
+                  <TableCell className="py-2.5 text-slate-700">
+                    {tier.packaging || '-'}
+                  </TableCell>
+                )}
+                <TableCell className="py-2.5 text-slate-700">
+                  {formatPrice(tier.price)}
+                </TableCell>
+                <TableCell className="py-2.5">
+                  <span className="font-semibold text-slate-900">
+                    {formatPricePerKg(tier.price_per_kg)}
+                  </span>
+                </TableCell>
+                <TableCell className="py-2.5">
+                  {skuSimpleInv ? (
+                    <StockBadge status={skuSimpleInv.stock_status} />
+                  ) : (
+                    <span className="text-xs text-slate-400">-</span>
+                  )}
+                </TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    )
+  }
+
   return (
     <Card className="border-0 shadow-lg shadow-slate-200/50 overflow-hidden max-w-3xl">
       <CardHeader className="bg-slate-50/80 border-b border-slate-200 py-4">
@@ -129,96 +347,14 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        {Array.from(tiersBySku.entries()).map(([sku, tiers]) => {
-          const firstTier = tiers[0]
-          const skuWarehouseInv = warehouseInvBySku.get(sku) || []
-          const skuSimpleInv = simpleInvBySku.get(sku)
-
-          return (
-            <div key={sku} className="border-b border-slate-100 last:border-b-0">
-              {/* SKU Header */}
-              <div className="px-6 py-3 bg-slate-50/50 border-b border-slate-100">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <code className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono border border-slate-200">
-                      {sku}
-                    </code>
-                    {firstTier.packaging && (
-                      <span className="text-sm text-slate-600">{firstTier.packaging}</span>
-                    )}
-                    {firstTier.pack_size > 0 && (
-                      <span className="text-xs text-slate-400">({firstTier.pack_size} kg)</span>
-                    )}
-                  </div>
-                  {/* Stock status for non-warehouse inventory */}
-                  {!hasWarehouseInventory && skuSimpleInv && (
-                    <StockBadge status={skuSimpleInv.stock_status} />
-                  )}
-                </div>
-              </div>
-
-              {/* Price Tiers Table */}
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-white hover:bg-white">
-                    <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Min Qty</TableHead>
-                    <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Price/Pack</TableHead>
-                    <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">$/kg</TableHead>
-                    {hasWarehouseInventory && (
-                      <TableHead className="text-xs font-semibold text-slate-500 uppercase tracking-wider py-2">Stock</TableHead>
-                    )}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tiers.map((tier, idx) => (
-                    <TableRow key={idx} className="hover:bg-slate-50/50">
-                      <TableCell className="py-2.5 font-medium text-slate-900">
-                        {tier.min_quantity !== null ? `${tier.min_quantity}+ kg` : '-'}
-                      </TableCell>
-                      <TableCell className="py-2.5 text-slate-700">
-                        {formatPrice(tier.price)}
-                      </TableCell>
-                      <TableCell className="py-2.5">
-                        <span className="font-semibold text-slate-900">
-                          {formatPricePerKg(tier.price_per_kg)}
-                        </span>
-                      </TableCell>
-                      {hasWarehouseInventory && idx === 0 && (
-                        <TableCell className="py-2.5" rowSpan={tiers.length}>
-                          {skuWarehouseInv.length > 0 ? (
-                            <div className="space-y-1">
-                              {skuWarehouseInv
-                                .filter(inv => inv.quantity_available > 0)
-                                .sort((a, b) => b.quantity_available - a.quantity_available)
-                                .map((inv, i) => {
-                                  const state = WAREHOUSE_TO_STATE[inv.warehouse] || inv.warehouse
-                                  return (
-                                    <div key={i} className="flex items-center gap-2 text-sm">
-                                      <span className="font-medium text-green-600">
-                                        {Math.round(inv.quantity_available).toLocaleString()} kg
-                                      </span>
-                                      <span className="text-slate-400">({state})</span>
-                                    </div>
-                                  )
-                                })}
-                            </div>
-                          ) : (
-                            <span className="text-red-500 text-sm">Out of Stock</span>
-                          )}
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )
-        })}
-
-        {tiersBySku.size === 0 && (
+        {tiersBySku.size === 0 ? (
           <div className="p-8 text-center text-slate-500">
             No pricing data available
           </div>
+        ) : isIOVendor ? (
+          renderTieredLayout()
+        ) : (
+          renderFlatLayout()
         )}
       </CardContent>
     </Card>
@@ -256,7 +392,7 @@ export function ProductDetail() {
         </div>
         <h3 className="text-lg font-semibold text-slate-900 mb-1">Failed to load product</h3>
         <p className="text-muted-foreground">{error.message}</p>
-        <Button variant="outline" className="mt-4" onClick={() => navigate('/products')}>
+        <Button variant="outline" className="mt-4" onClick={() => navigate(-1)}>
           Back to Products
         </Button>
       </div>
@@ -267,7 +403,7 @@ export function ProductDetail() {
     return (
       <div className="p-12 text-center">
         <h3 className="text-lg font-semibold text-slate-900 mb-1">Product not found</h3>
-        <Button variant="outline" className="mt-4" onClick={() => navigate('/products')}>
+        <Button variant="outline" className="mt-4" onClick={() => navigate(-1)}>
           Back to Products
         </Button>
       </div>
@@ -293,7 +429,7 @@ export function ProductDetail() {
         <div className="relative">
           {/* Back button */}
           <button
-            onClick={() => navigate('/products')}
+            onClick={() => navigate(-1)}
             className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors mb-4"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

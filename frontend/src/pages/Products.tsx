@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useIngredients, useIngredientCount } from '@/hooks/useIngredients'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -28,18 +27,18 @@ function CategoryBadge({ category }: { category: string | null }) {
   )
 }
 
-function StatusBadge({ status }: { status: string | null }) {
-  if (status === 'active') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-        Active
-      </span>
-    )
-  }
+const vendorStyles: Record<string, { bg: string; text: string; border: string }> = {
+  'IngredientsOnline': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+  'BulkSupplements': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'BoxNutra': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'TrafaPharma': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+}
+
+function VendorBadge({ vendor }: { vendor: string }) {
+  const style = vendorStyles[vendor] || { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' }
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-      {status || 'Unknown'}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${style.bg} ${style.text} ${style.border}`}>
+      {vendor}
     </span>
   )
 }
@@ -49,17 +48,37 @@ function SkeletonRow() {
     <TableRow>
       <TableCell><div className="h-4 bg-muted rounded animate-pulse w-3/4"></div></TableCell>
       <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-28"></div></TableCell>
-      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-16"></div></TableCell>
-      <TableCell><div className="h-4 bg-muted rounded animate-pulse w-8"></div></TableCell>
+      <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-32"></div></TableCell>
+      <TableCell><div className="h-4 bg-muted rounded animate-pulse w-4"></div></TableCell>
     </TableRow>
   )
 }
 
 export function Products() {
   const navigate = useNavigate()
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(0)
+  const [searchParams, setSearchParams] = useSearchParams()
   const pageSize = 50
+
+  // Read state from URL query params
+  const page = Math.max(0, parseInt(searchParams.get('page') || '0', 10))
+  const search = searchParams.get('search') || ''
+
+  // Update URL when page changes
+  const setPage = (newPage: number) => {
+    const params = new URLSearchParams(searchParams)
+    params.set('page', newPage.toString())
+    setSearchParams(params, { replace: true })
+  }
+
+  // Update URL when search changes (resets page to 0)
+  const handleSearchChange = (newSearch: string) => {
+    const params = new URLSearchParams()
+    if (newSearch) {
+      params.set('search', newSearch)
+    }
+    params.set('page', '0')
+    setSearchParams(params, { replace: true })
+  }
 
   const { data: totalCount } = useIngredientCount()
   const { data, isLoading, error } = useIngredients({
@@ -107,10 +126,7 @@ export function Products() {
             <Input
               placeholder="Search ingredients..."
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value)
-                setPage(0)
-              }}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="pl-11 h-12 text-base border-slate-200 focus:border-slate-400 focus:ring-slate-400"
             />
           </div>
@@ -140,7 +156,7 @@ export function Products() {
                   <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
                     <TableHead className="font-semibold text-slate-700 py-4">Ingredient Name</TableHead>
                     <TableHead className="font-semibold text-slate-700 py-4">Category</TableHead>
-                    <TableHead className="font-semibold text-slate-700 py-4">Status</TableHead>
+                    <TableHead className="font-semibold text-slate-700 py-4">Vendors</TableHead>
                     <TableHead className="font-semibold text-slate-700 py-4 w-12"></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -177,7 +193,15 @@ export function Products() {
                           <CategoryBadge category={ingredient.category_name} />
                         </TableCell>
                         <TableCell className="py-4">
-                          <StatusBadge status={ingredient.status} />
+                          <div className="flex flex-wrap gap-1">
+                            {ingredient.vendors && ingredient.vendors.length > 0 ? (
+                              ingredient.vendors.map((vendor) => (
+                                <VendorBadge key={vendor} vendor={vendor} />
+                              ))
+                            ) : (
+                              <span className="text-xs text-slate-400">-</span>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="py-4">
                           <svg className="w-4 h-4 text-slate-400 group-hover:text-blue-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">

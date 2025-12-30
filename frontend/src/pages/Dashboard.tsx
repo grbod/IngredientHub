@@ -47,6 +47,7 @@ export function Dashboard() {
   }
 
   const totalProducts = stats?.reduce((sum, v) => sum + v.productCount, 0) || 0
+  const totalVariants = stats?.reduce((sum, v) => sum + v.variantCount, 0) || 0
 
   return (
     <div className="space-y-6">
@@ -60,6 +61,12 @@ export function Dashboard() {
           <CardHeader className="pb-2">
             <CardDescription>Total Products</CardDescription>
             <CardTitle className="text-3xl">{totalProducts.toLocaleString()}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Size Variants</CardDescription>
+            <CardTitle className="text-3xl">{totalVariants.toLocaleString()}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
@@ -89,6 +96,10 @@ export function Dashboard() {
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Products</span>
                     <span className="font-medium">{vendor.productCount.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Variants</span>
+                    <span className="font-medium">{vendor.variantCount.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Last Scraped</span>
