@@ -1,0 +1,66 @@
+# IngredientHub FastAPI Backend Service
+#
+# Install:
+#   sudo cp /opt/ingredienthub/deploy/ingredienthub-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ingredienthub-api
+#   sudo systemctl start ingredienthub-api
+#
+# Manage:
+#   sudo systemctl status ingredienthub-api
+#   sudo systemctl restart ingredienthub-api
+#   sudo journalctl -u ingredienthub-api -f
+
+[Unit]
+Description=IngredientHub FastAPI Backend
+Documentation=https://github.com/gregsimek/IngredientHub
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ingredienthub
+Group=ingredienthub
+WorkingDirectory=/opt/ingredienthub/backend
+
+# Environment
+Environment="PATH=/opt/ingredienthub/backend/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/opt/ingredienthub/backend/.env
+
+# Virtual display for headed browser (Playwright)
+Environment="DISPLAY=:99"
+
+# Start command
+ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 &
+ExecStart=/opt/ingredienthub/backend/venv/bin/uvicorn api.main:app \
+    --host 127.0.0.1 \
+    --port 8001 \
+    --workers 1 \
+    --log-level info
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ingredienthub/backend/output
+ReadWritePaths=/var/log/ingredienthub
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ingredienthub-api
+
+[Install]
+WantedBy=multi-user.target

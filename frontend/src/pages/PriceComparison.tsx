@@ -17,6 +17,23 @@ function formatPrice(price: number | null) {
   return `$${price.toFixed(2)}`
 }
 
+function formatTimeAgo(dateString: string | null): string {
+  if (!dateString) return 'Unknown'
+
+  const date = new Date(dateString)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / (1000 * 60))
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays === 1) return '1 day ago'
+  if (diffDays < 30) return `${diffDays} days ago`
+  return date.toLocaleDateString()
+}
+
 const vendorStyles: Record<string, { headerBg: string }> = {
   'IngredientsOnline': { headerBg: 'bg-sky-600' },
   'BulkSupplements': { headerBg: 'bg-emerald-600' },
@@ -112,7 +129,7 @@ export function PriceComparison() {
   return (
     <div className="space-y-6">
       {/* Hero Header */}
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+      <div className="relative overflow-hidden rounded-xl hero-gradient hero-shimmer p-8">
         <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
         <div className="relative">
           <div className="flex items-center justify-between">
@@ -281,9 +298,10 @@ export function PriceComparison() {
                     return (
                       <th
                         key={vendor}
-                        className={`font-semibold py-2 px-3 text-center text-white text-xs min-w-[110px] ${style.headerBg}`}
+                        className={`font-semibold py-2 px-3 text-center text-white min-w-[110px] ${style.headerBg}`}
                       >
-                        {vendor.replace('IngredientsOnline', 'IO').replace('BulkSupplements', 'BulkSupps')}
+                        <div className="text-xs">{vendor.replace('IngredientsOnline', 'IO').replace('BulkSupplements', 'BulkSupps')}</div>
+                        <div className="text-[10px] font-normal opacity-80">$/kg</div>
                       </th>
                     )
                   })}
@@ -328,8 +346,8 @@ export function PriceComparison() {
                       </td>
                       {vendorNames.map((vendorName) => {
                         const vendor = vendorPrices.get(vendorName)
-                        const price = vendor?.best_price_per_kg
-                        const isLowest = price !== null && price !== undefined && price === lowestPrice
+                        const price = vendor?.best_price_per_kg ?? null
+                        const isLowest = price !== null && price === lowestPrice
                         const showBest = isLowest && hasCompetition
                         const priceDiff = price && lowestPrice && !isLowest ? price - lowestPrice : null
                         const priceDiffPercent = priceDiff && lowestPrice ? Math.round((priceDiff / lowestPrice) * 100) : null
@@ -383,7 +401,7 @@ export function PriceComparison() {
 
       {/* Product Detail Modal */}
       <Dialog open={!!selectedIngredient} onOpenChange={(open) => !open && setSelectedIngredient(null)}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-xl">{selectedIngredient?.name}</DialogTitle>
           </DialogHeader>
@@ -411,14 +429,23 @@ export function PriceComparison() {
                   const warehouseInv = ingredientDetail.warehouseInventory.filter(
                     inv => inv.vendor_name === vendorName
                   )
-                  const simpleInv = ingredientDetail.simpleInventory.find(
-                    inv => inv.vendor_name === vendorName
-                  )
+
+                  // Get most recent last_seen_at for this vendor
+                  const mostRecentUpdate = tiers.reduce((latest, tier) => {
+                    if (!tier.last_seen_at) return latest
+                    if (!latest) return tier.last_seen_at
+                    return new Date(tier.last_seen_at) > new Date(latest) ? tier.last_seen_at : latest
+                  }, null as string | null)
 
                   return (
                     <div key={vendorName} className="border rounded-lg overflow-hidden">
-                      <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm`}>
+                      <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm flex items-center justify-between`}>
                         <span>{vendorName}</span>
+                        {mostRecentUpdate && (
+                          <span className="text-xs font-normal opacity-80">
+                            Updated {formatTimeAgo(mostRecentUpdate)}
+                          </span>
+                        )}
                       </div>
                       <div className="p-3">
                         <table className="w-full text-sm">
@@ -453,7 +480,7 @@ export function PriceComparison() {
                                   </td>
                                 )}
                                 <td className="py-1.5 text-right font-medium text-slate-900">
-                                  ${displayPrice.toFixed(2)}
+                                  {displayPrice != null ? `$${displayPrice.toFixed(2)}` : '-'}
                                 </td>
                                 <td className="py-1.5 text-right text-slate-600">
                                   {tier.price_per_kg ? `$${tier.price_per_kg.toFixed(2)}` : '-'}
@@ -470,10 +497,13 @@ export function PriceComparison() {
                                           ? 'bg-green-100 text-green-700'
                                           : tierStock.stock_status === 'out_of_stock'
                                           ? 'bg-red-100 text-red-700'
+                                          : tierStock.stock_status === 'inquire'
+                                          ? 'bg-amber-100 text-amber-700'
                                           : 'bg-slate-100 text-slate-500'
                                       }`}>
                                         {tierStock.stock_status === 'in_stock' ? 'In Stock' :
-                                         tierStock.stock_status === 'out_of_stock' ? 'Out of Stock' : 'Unknown'}
+                                         tierStock.stock_status === 'out_of_stock' ? 'Out of Stock' :
+                                         tierStock.stock_status === 'inquire' ? 'Inquire' : 'Unknown'}
                                       </span>
                                     )
                                   })()}

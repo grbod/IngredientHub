@@ -9,9 +9,10 @@ export interface PriceTier {
   packaging: string | null
   pack_size: number
   min_quantity: number | null
-  price: number
+  price: number | null
   price_per_kg: number | null
   product_url: string | null
+  last_seen_at: string | null
 }
 
 export interface InventoryLevel {
@@ -92,7 +93,7 @@ export function useIngredientDetail(ingredientId: number | undefined) {
       // Get vendor ingredients for these variants
       const { data: vendorIngredients } = await supabase
         .from('vendoringredients')
-        .select('vendor_ingredient_id, vendor_id, variant_id, sku, status, current_source_id')
+        .select('vendor_ingredient_id, vendor_id, variant_id, sku, status, current_source_id, last_seen_at')
         .in('variant_id', variantIds)
         .or('status.eq.active,status.is.null')
 
@@ -169,6 +170,7 @@ export function useIngredientDetail(ingredientId: number | undefined) {
           price: pt.price,
           price_per_kg: pt.price_per_kg,
           product_url: productUrl,
+          last_seen_at: vi.last_seen_at,
         })
       }
 

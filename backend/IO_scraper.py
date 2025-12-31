@@ -1066,25 +1066,39 @@ def get_existing_price(conn, vendor_ingredient_id: int) -> Optional[float]:
 def get_existing_stock_status(conn, vendor_ingredient_id: int) -> Optional[str]:
     """Get the existing stock status for a vendor ingredient (for comparison).
 
-    For IO, check VendorInventory for any warehouse with quantity > 0.
+    For IO, check InventoryLevels for any warehouse with quantity > 0.
+    Falls back to VendorInventory.stock_status for other vendors.
     """
     cursor = conn.cursor()
     ph = db_placeholder(conn)
+
+    # First check InventoryLevels (multi-warehouse for IO)
     cursor.execute(
-        f'''SELECT stock_status, quantity_available FROM VendorInventory
-           WHERE vendor_ingredient_id = {ph}''',
+        f'''SELECT il.quantity_available
+           FROM InventoryLevels il
+           JOIN InventoryLocations iloc ON il.inventory_location_id = iloc.inventory_location_id
+           WHERE iloc.vendor_ingredient_id = {ph}''',
         (vendor_ingredient_id,)
     )
     rows = cursor.fetchall()
-    if not rows:
-        return None
-    # If any warehouse has stock, consider it in_stock
-    for row in rows:
-        status = row[0]
-        qty = row[1] if len(row) > 1 else 0
-        if status == 'in_stock' or (qty and qty > 0):
-            return 'in_stock'
-    return 'out_of_stock'
+    if rows:
+        # If any warehouse has stock, consider it in_stock
+        for row in rows:
+            qty = row[0] if row[0] else 0
+            if qty > 0:
+                return 'in_stock'
+        return 'out_of_stock'
+
+    # Fall back to VendorInventory (simple stock status for BS/BN/TP)
+    cursor.execute(
+        f'''SELECT stock_status FROM VendorInventory
+           WHERE vendor_ingredient_id = {ph}''',
+        (vendor_ingredient_id,)
+    )
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    return None
 
 
 def delete_old_price_tiers(conn, vendor_ingredient_id: int) -> None:
@@ -1145,8 +1159,8 @@ def upsert_order_rule(conn, vendor_ingredient_id: int, scraped_at: str) -> None:
     )
 
 
-def upsert_packaging_size(conn, vendor_ingredient_id: int) -> None:
-    """Insert or update packaging size for IO 25kg drum."""
+def upsert_packaging_size(conn, vendor_ingredient_id: int, description: str = None, quantity: float = None) -> None:
+    """Insert or update packaging size from actual product data."""
     cursor = conn.cursor()
     ph = db_placeholder(conn)
     # Get kg unit_id
@@ -1154,12 +1168,16 @@ def upsert_packaging_size(conn, vendor_ingredient_id: int) -> None:
     unit_row = cursor.fetchone()
     unit_id = unit_row[0] if unit_row else None
 
+    # Use actual packaging data if provided, otherwise fall back to defaults
+    pkg_description = description if description else IO_BUSINESS_MODEL['packaging_description']
+    pkg_quantity = quantity if quantity else IO_BUSINESS_MODEL['packaging_size']
+
     # Delete existing and insert new
     cursor.execute(f'DELETE FROM PackagingSizes WHERE vendor_ingredient_id = {ph}', (vendor_ingredient_id,))
     cursor.execute(
         f'''INSERT INTO PackagingSizes (vendor_ingredient_id, unit_id, description, quantity)
            VALUES ({ph}, {ph}, {ph}, {ph})''',
-        (vendor_ingredient_id, unit_id, IO_BUSINESS_MODEL['packaging_description'], IO_BUSINESS_MODEL['packaging_size'])
+        (vendor_ingredient_id, unit_id, pkg_description, pkg_quantity)
     )
 
 
@@ -1430,7 +1448,13 @@ def save_to_database(conn, rows: List[Dict], stats: Optional['StatsTracker'] = N
 
         # Insert order rule and packaging
         upsert_order_rule(conn, vendor_ingredient_id, scraped_at)
-        upsert_packaging_size(conn, vendor_ingredient_id)
+        first_row = sku_rows[0]
+        upsert_packaging_size(
+            conn,
+            vendor_ingredient_id,
+            first_row.get('packaging'),
+            first_row.get('packaging_kg')
+        )
 
         # Insert inventory from first row (all rows share same inventory)
         first_sku_row = sku_rows[0]

@@ -46,6 +46,14 @@ function StockBadge({ status }: { status: string | null }) {
       </span>
     )
   }
+  if (statusLower === 'inquire') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+        Inquire
+      </span>
+    )
+  }
   // Don't show badge for unknown status
   return null
 }
@@ -89,9 +97,22 @@ function formatPricePerKg(price: number | null): string {
   return `$${price.toFixed(2)}/kg`
 }
 
-function formatQuantity(qty: number | null): string {
-  if (qty === null || qty === undefined) return '-'
-  return `${qty.toLocaleString()} kg`
+function formatLastUpdated(dateStr: string | null): string {
+  if (!dateStr) return 'Unknown'
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return 'Unknown'
+
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / (1000 * 60))
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+  const diffDays = Math.floor(diffHours / 24)
+
+  if (diffMins < 1) return 'Just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 interface VendorPricingCardProps {
@@ -104,6 +125,13 @@ interface VendorPricingCardProps {
 function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleInventory }: VendorPricingCardProps) {
   // Detect if this is a tiered pricing vendor (IO) or per-pack vendor (BS/BN/TP)
   const isIOVendor = vendorName === 'IngredientsOnline'
+
+  // Find the most recent last_seen_at timestamp from all price tiers
+  const mostRecentUpdate = priceTiers.reduce<string | null>((latest, tier) => {
+    if (!tier.last_seen_at) return latest
+    if (!latest) return tier.last_seen_at
+    return new Date(tier.last_seen_at) > new Date(latest) ? tier.last_seen_at : latest
+  }, null)
 
   // Group price tiers by SKU
   const tiersBySku = new Map<string, PriceTier[]>()
@@ -183,10 +211,17 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tiers.map((tier, idx) => (
+                {tiers.map((tier, idx) => {
+                  // For single-tier IO items, use pack_size as min qty when min_quantity is 0 or 1
+                  const isSingleTier = tiers.length === 1
+                  const effectiveMinQty = (isSingleTier && (tier.min_quantity === null || tier.min_quantity <= 1))
+                    ? tier.pack_size
+                    : tier.min_quantity
+
+                  return (
                   <TableRow key={idx} className="hover:bg-slate-50/50">
                     <TableCell className="py-2.5 font-medium text-slate-900">
-                      {tier.min_quantity ? `${tier.min_quantity}kg` : '-'}
+                      {effectiveMinQty ? `${effectiveMinQty}kg` : '-'}
                     </TableCell>
                     <TableCell className="py-2.5 text-slate-700">
                       {formatPrice(tier.price)}
@@ -221,7 +256,7 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
                       </TableCell>
                     )}
                   </TableRow>
-                ))}
+                )})}
               </TableBody>
             </Table>
           </div>
@@ -344,6 +379,11 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
               {tiersBySku.size} variant{tiersBySku.size !== 1 ? 's' : ''}
             </span>
           </div>
+          {mostRecentUpdate && (
+            <span className="text-xs text-slate-400">
+              Updated {formatLastUpdated(mostRecentUpdate)}
+            </span>
+          )}
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -424,7 +464,7 @@ export function ProductDetail() {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+      <div className="relative overflow-hidden rounded-xl hero-gradient hero-shimmer p-8">
         <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
         <div className="relative">
           {/* Back button */}

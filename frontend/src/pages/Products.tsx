@@ -1,7 +1,16 @@
+import { useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useIngredients, useIngredientCount } from '@/hooks/useIngredients'
+import { useIngredients, useIngredientCount, type StockStatus } from '@/hooks/useIngredients'
+import { useCategories } from '@/hooks/useCategories'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -11,6 +20,15 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Card } from '@/components/ui/card'
+
+type SortOption = 'name-asc' | 'name-desc' | 'vendors-desc' | 'recent'
+
+const sortOptions: { value: SortOption; label: string }[] = [
+  { value: 'name-asc', label: 'Name (A-Z)' },
+  { value: 'name-desc', label: 'Name (Z-A)' },
+  { value: 'vendors-desc', label: 'Vendor count (most first)' },
+  { value: 'recent', label: 'Recently updated' },
+]
 
 const vendorFilters = [
   { name: 'IngredientsOnline', color: 'bg-sky-500' },
@@ -46,9 +64,29 @@ function VendorBadge({ vendor }: { vendor: string }) {
   )
 }
 
+function StockIndicator({ status }: { status: StockStatus }) {
+  if (status === 'in_stock') {
+    return (
+      <span className="inline-flex items-center" title="In stock at one or more vendors">
+        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+      </span>
+    )
+  }
+  if (status === 'out_of_stock') {
+    return (
+      <span className="inline-flex items-center" title="Out of stock at all vendors">
+        <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
+      </span>
+    )
+  }
+  // Unknown status - no indicator
+  return null
+}
+
 function SkeletonRow() {
   return (
     <TableRow>
+      <TableCell><div className="h-2.5 w-2.5 bg-muted rounded-full animate-pulse"></div></TableCell>
       <TableCell><div className="h-4 bg-muted rounded animate-pulse w-3/4"></div></TableCell>
       <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-24"></div></TableCell>
       <TableCell><div className="h-5 bg-muted rounded-full animate-pulse w-28"></div></TableCell>
@@ -66,6 +104,8 @@ export function Products() {
   const page = Math.max(0, parseInt(searchParams.get('page') || '0', 10))
   const search = searchParams.get('search') || ''
   const vendorFilter = searchParams.get('vendor') || ''
+  const categoryFilter = searchParams.get('category') || ''
+  const sortOption = (searchParams.get('sort') as SortOption) || 'name-asc'
 
   // Update URL when page changes
   const setPage = (newPage: number) => {
@@ -98,6 +138,30 @@ export function Products() {
     setSearchParams(params, { replace: true })
   }
 
+  // Update URL when category filter changes
+  const handleCategoryFilter = (categoryId: string) => {
+    const params = new URLSearchParams(searchParams)
+    if (categoryId && categoryId !== 'all') {
+      params.set('category', categoryId)
+    } else {
+      params.delete('category')
+    }
+    params.set('page', '0')
+    setSearchParams(params, { replace: true })
+  }
+
+  // Update URL when sort changes
+  const handleSortChange = (sort: SortOption) => {
+    const params = new URLSearchParams(searchParams)
+    if (sort !== 'name-asc') {
+      params.set('sort', sort)
+    } else {
+      params.delete('sort')
+    }
+    setSearchParams(params, { replace: true })
+  }
+
+  const { data: categories } = useCategories()
   const { data: totalCount } = useIngredientCount()
   const { data, isLoading, error } = useIngredients({
     search: search || undefined,
@@ -105,16 +169,52 @@ export function Products() {
     offset: page * pageSize,
   })
 
-  // Filter by vendor on client side (could be moved to API)
-  let ingredients = data?.data || []
-  if (vendorFilter) {
-    ingredients = ingredients.filter(i => i.vendors?.includes(vendorFilter))
-  }
+  // Filter by vendor and category on client side (could be moved to API)
+  const filteredIngredients = useMemo(() => {
+    let result = data?.data || []
+
+    if (vendorFilter) {
+      result = result.filter(i => i.vendors?.includes(vendorFilter))
+    }
+
+    if (categoryFilter) {
+      const catId = parseInt(categoryFilter, 10)
+      result = result.filter(i => i.category_id === catId)
+    }
+
+    return result
+  }, [data?.data, vendorFilter, categoryFilter])
+
+  // Sort ingredients on client side
+  const sortedIngredients = useMemo(() => {
+    const sorted = [...filteredIngredients]
+
+    switch (sortOption) {
+      case 'name-asc':
+        sorted.sort((a, b) => a.name.localeCompare(b.name))
+        break
+      case 'name-desc':
+        sorted.sort((a, b) => b.name.localeCompare(a.name))
+        break
+      case 'vendors-desc':
+        sorted.sort((a, b) => b.vendor_count - a.vendor_count)
+        break
+      case 'recent':
+        // Since we don't have updated_at in the current schema,
+        // fall back to ingredient_id (higher = newer)
+        sorted.sort((a, b) => b.ingredient_id - a.ingredient_id)
+        break
+    }
+
+    return sorted
+  }, [filteredIngredients, sortOption])
+
+  const ingredients = sortedIngredients
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+      <div className="relative overflow-hidden rounded-xl hero-gradient hero-shimmer p-8">
         <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
         <div className="relative">
           <div className="flex items-center gap-3 mb-2">
@@ -162,31 +262,81 @@ export function Products() {
           )}
         </div>
 
-        {/* Vendor Filter Chips */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-slate-500">Filter:</span>
-          {vendorFilters.map(v => (
-            <button
-              key={v.name}
-              onClick={() => handleVendorFilter(v.name)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                vendorFilter === v.name
-                  ? 'bg-slate-900 text-white shadow-md'
-                  : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-              }`}
+        {/* Filters Row */}
+        <div className="flex flex-wrap items-center gap-4">
+          {/* Vendor Filter Chips */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">Vendor:</span>
+            {vendorFilters.map(v => (
+              <button
+                key={v.name}
+                onClick={() => handleVendorFilter(v.name)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                  vendorFilter === v.name
+                    ? 'bg-slate-900 text-white shadow-md'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${v.color}`}></span>
+                {v.name}
+              </button>
+            ))}
+            {vendorFilter && (
+              <button
+                onClick={() => handleVendorFilter(vendorFilter)}
+                className="text-xs text-slate-500 hover:text-slate-700 underline ml-1"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {/* Divider */}
+          <div className="hidden sm:block h-6 w-px bg-slate-200" />
+
+          {/* Category Filter */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">Category:</span>
+            <Select
+              value={categoryFilter || 'all'}
+              onValueChange={handleCategoryFilter}
             >
-              <span className={`w-2 h-2 rounded-full ${v.color}`}></span>
-              {v.name}
-            </button>
-          ))}
-          {vendorFilter && (
-            <button
-              onClick={() => handleVendorFilter(vendorFilter)}
-              className="text-xs text-slate-500 hover:text-slate-700 underline ml-1"
+              <SelectTrigger className="w-[180px] h-8 text-xs bg-white">
+                <SelectValue placeholder="All categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All categories</SelectItem>
+                {categories?.map(cat => (
+                  <SelectItem key={cat.category_id} value={cat.category_id.toString()}>
+                    {cat.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Divider */}
+          <div className="hidden sm:block h-6 w-px bg-slate-200" />
+
+          {/* Sort */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-500">Sort:</span>
+            <Select
+              value={sortOption}
+              onValueChange={(value) => handleSortChange(value as SortOption)}
             >
-              Clear
-            </button>
-          )}
+              <SelectTrigger className="w-[180px] h-8 text-xs bg-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {sortOptions.map(opt => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 
@@ -211,6 +361,7 @@ export function Products() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-slate-50/80 hover:bg-slate-50/80 border-b border-slate-200">
+                    <TableHead className="font-semibold text-slate-700 py-3 w-8"></TableHead>
                     <TableHead className="font-semibold text-slate-700 py-3">Ingredient Name</TableHead>
                     <TableHead className="font-semibold text-slate-700 py-3">Category</TableHead>
                     <TableHead className="font-semibold text-slate-700 py-3">Vendors</TableHead>
@@ -222,7 +373,7 @@ export function Products() {
                     Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} />)
                   ) : ingredients.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={4} className="h-40 text-center">
+                      <TableCell colSpan={5} className="h-40 text-center">
                         <div className="flex flex-col items-center justify-center">
                           <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
                             <svg className="h-8 w-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -241,6 +392,9 @@ export function Products() {
                         className={`group transition-colors cursor-pointer ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'} hover:bg-blue-50/50`}
                         onClick={() => navigate(`/products/${ingredient.ingredient_id}`)}
                       >
+                        <TableCell className="py-3 w-8">
+                          <StockIndicator status={ingredient.stock_status} />
+                        </TableCell>
                         <TableCell className="py-3">
                           <p className="font-medium text-slate-900 group-hover:text-blue-600 transition-colors">
                             {ingredient.name}

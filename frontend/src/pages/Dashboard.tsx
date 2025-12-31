@@ -1,5 +1,45 @@
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useVendorStats } from '@/hooks/useVendors'
+
+/**
+ * Custom hook for animating a number from 0 to a target value.
+ * Uses requestAnimationFrame for smooth 60fps animation with ease-out cubic easing.
+ */
+function useCountAnimation(targetValue: number, duration = 1800): number {
+  const [count, setCount] = useState(0)
+  const hasAnimated = useRef(false)
+
+  useEffect(() => {
+    // Only animate once when we first get a non-zero target value
+    if (targetValue === 0 || hasAnimated.current) return
+
+    hasAnimated.current = true
+    const startTime = performance.now()
+
+    const animate = (currentTime: number) => {
+      const elapsed = currentTime - startTime
+      const progress = Math.min(elapsed / duration, 1)
+
+      // Ease out cubic for nice deceleration at the end
+      const easeOut = 1 - Math.pow(1 - progress, 3)
+      const current = Math.floor(easeOut * targetValue)
+
+      setCount(current)
+
+      if (progress < 1) {
+        requestAnimationFrame(animate)
+      } else {
+        // Ensure we end on the exact target value
+        setCount(targetValue)
+      }
+    }
+
+    requestAnimationFrame(animate)
+  }, [targetValue, duration])
+
+  return count
+}
 
 const vendorColors: Record<string, { bg: string; border: string; accent: string; icon: string }> = {
   'IngredientsOnline': { bg: 'bg-sky-50', border: 'border-sky-200', accent: 'text-sky-600', icon: 'bg-sky-500' },
@@ -43,11 +83,21 @@ export function Dashboard() {
   const navigate = useNavigate()
   const { data: stats, isLoading, error } = useVendorStats()
 
+  // Calculate totals (will be 0 while loading)
+  const totalProducts = stats?.reduce((sum, v) => sum + v.productCount, 0) || 0
+  const totalVariants = stats?.reduce((sum, v) => sum + v.variantCount, 0) || 0
+  const activeVendors = stats?.length || 0
+
+  // Animated values for the stats cards - hooks must be called unconditionally
+  const animatedProducts = useCountAnimation(totalProducts)
+  const animatedVariants = useCountAnimation(totalVariants)
+  const animatedVendors = useCountAnimation(activeVendors, 1200) // Faster for small numbers
+
   if (isLoading) {
     return (
       <div className="space-y-8">
         {/* Header skeleton */}
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+        <div className="relative overflow-hidden rounded-xl hero-gradient p-8">
           <div className="h-10 w-48 bg-white/10 rounded animate-pulse mb-2"></div>
           <div className="h-5 w-64 bg-white/10 rounded animate-pulse"></div>
         </div>
@@ -77,13 +127,10 @@ export function Dashboard() {
     )
   }
 
-  const totalProducts = stats?.reduce((sum, v) => sum + v.productCount, 0) || 0
-  const totalVariants = stats?.reduce((sum, v) => sum + v.variantCount, 0) || 0
-
   return (
     <div className="space-y-8">
       {/* Hero Header */}
-      <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+      <div className="relative overflow-hidden rounded-xl hero-gradient hero-shimmer p-8">
         <div className="absolute inset-0 bg-grid-white/5 [mask-image:linear-gradient(0deg,transparent,black)]"></div>
         <div className="relative">
           <div className="flex items-center gap-3 mb-2">
@@ -111,7 +158,7 @@ export function Dashboard() {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-sm font-medium text-slate-500">Total Products</p>
-              <p className="text-3xl font-bold text-slate-900 mt-1">{totalProducts.toLocaleString()}</p>
+              <p className="text-3xl font-bold text-slate-900 mt-1 tabular-nums">{animatedProducts.toLocaleString()}</p>
               <p className="text-xs text-slate-400 mt-2">Unique ingredients tracked</p>
             </div>
             <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-blue-50">
@@ -126,7 +173,7 @@ export function Dashboard() {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-sm font-medium text-slate-500">Size Variants</p>
-              <p className="text-3xl font-bold text-slate-900 mt-1">{totalVariants.toLocaleString()}</p>
+              <p className="text-3xl font-bold text-slate-900 mt-1 tabular-nums">{animatedVariants.toLocaleString()}</p>
               <p className="text-xs text-slate-400 mt-2">Different packaging options</p>
             </div>
             <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-purple-50">
@@ -141,7 +188,7 @@ export function Dashboard() {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-sm font-medium text-slate-500">Active Vendors</p>
-              <p className="text-3xl font-bold text-slate-900 mt-1">{stats?.length || 0}</p>
+              <p className="text-3xl font-bold text-slate-900 mt-1 tabular-nums">{animatedVendors.toLocaleString()}</p>
               <p className="text-xs text-slate-400 mt-2">Connected data sources</p>
             </div>
             <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-green-50">

@@ -2,6 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Animated gradient for hero sections */
+@keyframes gradient-shift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes subtle-shimmer {
+  0% {
+    opacity: 0.03;
+    transform: translateX(-100%) skewX(-15deg);
+  }
+  50% {
+    opacity: 0.08;
+  }
+  100% {
+    opacity: 0.03;
+    transform: translateX(200%) skewX(-15deg);
+  }
+}
+
+@keyframes scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: translate(50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(50%, -50%) rotate(360deg);
+  }
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -55,5 +97,46 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  /* Animated hero gradient - uses GPU-accelerated properties */
+  .hero-gradient {
+    background: linear-gradient(
+      135deg,
+      rgb(15 23 42) 0%,
+      rgb(30 41 59) 25%,
+      rgb(51 65 85) 50%,
+      rgb(30 41 59) 75%,
+      rgb(15 23 42) 100%
+    );
+    background-size: 400% 400%;
+    animation: gradient-shift 15s ease infinite;
+  }
+
+  /* Shimmer overlay effect for hero sections */
+  .hero-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      110deg,
+      transparent 20%,
+      rgba(255, 255, 255, 0.1) 50%,
+      transparent 80%
+    );
+    animation: subtle-shimmer 12s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  /* Scan line effect for admin terminal aesthetic */
+  .animate-scan {
+    animation: scan 4s linear infinite;
+  }
+
+  /* Slow spin for decorative elements */
+  .animate-spin-slow {
+    animation: spin-slow 20s linear infinite;
   }
 }

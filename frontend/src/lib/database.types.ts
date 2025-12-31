@@ -272,6 +272,87 @@ export type Database = {
         }
         Relationships: []
       }
+      locations: {
+        Row: {
+          location_id: number
+          name: string
+          description: string | null
+        }
+        Insert: {
+          location_id?: number
+          name: string
+          description?: string | null
+        }
+        Update: {
+          location_id?: number
+          name?: string
+          description?: string | null
+        }
+        Relationships: []
+      }
+      inventorylocations: {
+        Row: {
+          inventory_location_id: number
+          vendor_ingredient_id: number
+          location_id: number
+        }
+        Insert: {
+          inventory_location_id?: number
+          vendor_ingredient_id: number
+          location_id: number
+        }
+        Update: {
+          inventory_location_id?: number
+          vendor_ingredient_id?: number
+          location_id?: number
+        }
+        Relationships: []
+      }
+      inventorylevels: {
+        Row: {
+          inventory_level_id: number
+          inventory_location_id: number
+          quantity_available: number
+          stock_status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          inventory_level_id?: number
+          inventory_location_id: number
+          quantity_available: number
+          stock_status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          inventory_level_id?: number
+          inventory_location_id?: number
+          quantity_available?: number
+          stock_status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      vendorinventory: {
+        Row: {
+          vendor_inventory_id: number
+          vendor_ingredient_id: number
+          stock_status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          vendor_inventory_id?: number
+          vendor_ingredient_id: number
+          stock_status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          vendor_inventory_id?: number
+          vendor_ingredient_id?: number
+          stock_status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
