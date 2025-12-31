@@ -10,10 +10,10 @@ This guide covers deploying IngredientHub to a Vultr VPS with nginx, SSL, and CI
 │                                                        │
 │  nginx (80/443)                                        │
 │    │                                                   │
-│    ├─► ingredients.bodytools.work                      │
+│    ├─► ingredienthub.bodytools.work                      │
 │    │     └─► /var/www/ingredienthub/ (static React)    │
 │    │                                                   │
-│    └─► ingredients.bodytools.work/api/*                │
+│    └─► ingredienthub.bodytools.work/api/*                │
 │          └─► proxy_pass localhost:8001                 │
 │                    │                                   │
 │                    ▼                                   │
@@ -37,9 +37,9 @@ SSH into your VPS and run:
 
 ```bash
 # Download and run setup script
-curl -sL https://raw.githubusercontent.com/gregsimek/IngredientHub/main/deploy/setup.sh -o setup.sh
+curl -sL https://raw.githubusercontent.com/grbod/IngredientHub/main/deploy/setup.sh -o setup.sh
 chmod +x setup.sh
-sudo ./setup.sh ingredients.bodytools.work https://github.com/gregsimek/IngredientHub.git
+sudo ./setup.sh ingredienthub.bodytools.work https://github.com/grbod/IngredientHub.git
 ```
 
 ### 2. Configure Environment
@@ -170,7 +170,7 @@ sudo certbot renew
 sudo certbot renew --force-renewal
 
 # Manually request certificate
-sudo certbot --nginx -d ingredients.bodytools.work
+sudo certbot --nginx -d ingredienthub.bodytools.work
 ```
 
 ## Headed Browser (Playwright)

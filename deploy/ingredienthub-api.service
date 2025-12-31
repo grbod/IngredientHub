@@ -13,7 +13,7 @@
 
 [Unit]
 Description=IngredientHub FastAPI Backend
-Documentation=https://github.com/gregsimek/IngredientHub
+Documentation=https://github.com/grbod/IngredientHub
 After=network.target network-online.target
 Wants=network-online.target
 

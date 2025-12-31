@@ -30,12 +30,12 @@ fi
 # Configuration
 # ============================================================================
 
-DOMAIN="${1:-ingredients.bodytools.work}"  # Pass domain as first argument
+DOMAIN="${1:-ingredienthub.bodytools.work}"  # Pass domain as first argument
 APP_USER="ingredienthub"
 APP_DIR="/opt/ingredienthub"
 WEB_DIR="/var/www/ingredienthub"
 LOG_DIR="/var/log/ingredienthub"
-REPO_URL="${2:-https://github.com/gregsimek/IngredientHub.git}"
+REPO_URL="${2:-https://github.com/grbod/IngredientHub.git}"
 
 log_info "Setting up IngredientHub for domain: $DOMAIN"
 
