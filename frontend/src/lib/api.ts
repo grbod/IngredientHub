@@ -67,6 +67,7 @@ export interface CronSuggestion {
   reason: string
   last_run: string | null
   avg_duration_minutes: number | null
+  command?: string
 }
 
 export interface AlertSummary {
