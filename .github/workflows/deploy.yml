@@ -93,6 +93,9 @@ jobs:
 
             cd /opt/ingredienthub
 
+            # Allow git to operate on this directory (ownership differs)
+            git config --global --add safe.directory /opt/ingredienthub || true
+
             # Pull latest code
             git fetch origin main
             git reset --hard origin/main
