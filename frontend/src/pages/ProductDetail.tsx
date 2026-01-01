@@ -372,7 +372,7 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
   }
 
   return (
-    <Card className="border-0 shadow-lg shadow-slate-200/50 overflow-hidden max-w-3xl">
+    <Card className="border-0 shadow-lg shadow-slate-200/50 overflow-hidden max-w-3xl mx-auto">
       <CardHeader className="bg-slate-50/80 border-b border-slate-200 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">

@@ -95,6 +95,148 @@ function SkeletonRow() {
   )
 }
 
+interface PaginationControlsProps {
+  page: number
+  pageSize: number
+  totalCount: number | undefined
+  currentPageCount: number
+  onPageChange: (page: number) => void
+}
+
+function PaginationControls({ page, pageSize, totalCount, currentPageCount, onPageChange }: PaginationControlsProps) {
+  const totalPages = totalCount !== undefined ? Math.ceil(totalCount / pageSize) : 0
+  const currentPage = page + 1 // Convert to 1-indexed for display
+
+  // Calculate which page numbers to show
+  const getPageNumbers = () => {
+    if (totalPages <= 9) {
+      // Show all pages if 9 or fewer
+      return Array.from({ length: totalPages }, (_, i) => i + 1)
+    }
+
+    const pages: (number | 'ellipsis')[] = []
+
+    // Always show first page
+    pages.push(1)
+
+    // Calculate range around current page
+    const rangeStart = Math.max(2, currentPage - 2)
+    const rangeEnd = Math.min(totalPages - 1, currentPage + 2)
+
+    // Add ellipsis if there's a gap after page 1
+    if (rangeStart > 2) {
+      pages.push('ellipsis')
+    }
+
+    // Add pages in range
+    for (let i = rangeStart; i <= rangeEnd; i++) {
+      pages.push(i)
+    }
+
+    // Add ellipsis if there's a gap before last page
+    if (rangeEnd < totalPages - 1) {
+      pages.push('ellipsis')
+    }
+
+    // Always show last page
+    if (totalPages > 1) {
+      pages.push(totalPages)
+    }
+
+    return pages
+  }
+
+  const handleGoToPage = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      const value = parseInt((e.target as HTMLInputElement).value, 10)
+      if (!isNaN(value) && value >= 1 && value <= totalPages) {
+        onPageChange(value - 1) // Convert to 0-indexed
+        ;(e.target as HTMLInputElement).value = ''
+      }
+    }
+  }
+
+  const pageNumbers = getPageNumbers()
+
+  return (
+    <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50/50">
+      <p className="text-sm text-slate-600">
+        Showing <span className="font-semibold text-slate-900">{page * pageSize + 1}</span> to{' '}
+        <span className="font-semibold text-slate-900">{page * pageSize + currentPageCount}</span>
+        {totalCount !== undefined && (
+          <> of <span className="font-semibold text-slate-900">{totalCount.toLocaleString()}</span></>
+        )}
+      </p>
+      <div className="flex items-center gap-2">
+        {/* Previous button */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onPageChange(Math.max(0, page - 1))}
+          disabled={page === 0}
+          className="gap-1 h-8"
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Prev
+        </Button>
+
+        {/* Page number buttons */}
+        <div className="flex items-center gap-1">
+          {pageNumbers.map((pageNum, idx) =>
+            pageNum === 'ellipsis' ? (
+              <span key={`ellipsis-${idx}`} className="px-2 text-slate-400">...</span>
+            ) : (
+              <button
+                key={pageNum}
+                onClick={() => onPageChange(pageNum - 1)}
+                className={`min-w-[32px] h-8 px-2 text-sm font-medium rounded transition-colors ${
+                  pageNum === currentPage
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                {pageNum}
+              </button>
+            )
+          )}
+        </div>
+
+        {/* Next button */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onPageChange(page + 1)}
+          disabled={currentPageCount < pageSize}
+          className="gap-1 h-8"
+        >
+          Next
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </Button>
+
+        {/* Divider */}
+        <div className="h-6 w-px bg-slate-200 mx-1" />
+
+        {/* Go to page input */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-500">Go to</span>
+          <Input
+            type="number"
+            min={1}
+            max={totalPages}
+            placeholder="#"
+            onKeyDown={handleGoToPage}
+            className="w-16 h-8 text-sm text-center"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function Products() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -427,44 +569,13 @@ export function Products() {
             </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50/50">
-              <p className="text-sm text-slate-600">
-                Showing <span className="font-semibold text-slate-900">{page * pageSize + 1}</span> to{' '}
-                <span className="font-semibold text-slate-900">{page * pageSize + ingredients.length}</span>
-                {totalCount !== undefined && (
-                  <> of <span className="font-semibold text-slate-900">{totalCount.toLocaleString()}</span></>
-                )}
-              </p>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(Math.max(0, page - 1))}
-                  disabled={page === 0}
-                  className="gap-1 h-8"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                  </svg>
-                  Previous
-                </Button>
-                <div className="flex items-center gap-1 px-2">
-                  <span className="text-sm font-medium text-slate-900 bg-white px-2.5 py-1 rounded border border-slate-200">{page + 1}</span>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(page + 1)}
-                  disabled={ingredients.length < pageSize}
-                  className="gap-1 h-8"
-                >
-                  Next
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </Button>
-              </div>
-            </div>
+            <PaginationControls
+              page={page}
+              pageSize={pageSize}
+              totalCount={totalCount}
+              currentPageCount={ingredients.length}
+              onPageChange={setPage}
+            />
           </>
         )}
       </Card>

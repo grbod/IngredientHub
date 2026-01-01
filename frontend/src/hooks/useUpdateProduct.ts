@@ -8,6 +8,17 @@ import { api } from '@/lib/api'
 import type { UpdateProductResponse } from '@/lib/api'
 
 /**
+ * Detailed change for a single variant
+ */
+export interface DetailedChange {
+  sku: string | null
+  vendor_ingredient_id: number
+  price?: { old: number | null; new: number | null }
+  stock_status?: { old: string | null; new: string | null }
+  no_changes?: boolean
+}
+
+/**
  * Aggregated response for batch updates
  */
 export interface BatchUpdateResponse {
@@ -17,6 +28,7 @@ export interface BatchUpdateResponse {
   variants_failed: number
   price_changes: number
   stock_changes: number
+  changes: DetailedChange[]
 }
 
 interface UseUpdateProductOptions {
@@ -61,20 +73,50 @@ export function useUpdateProduct(options?: UseUpdateProductOptions) {
         throw new Error(firstError.reason?.message || 'All updates failed')
       }
 
-      // Count price and stock changes from successful updates
+      // Collect detailed changes from successful updates
       let priceChanges = 0
       let stockChanges = 0
+      const changes: DetailedChange[] = []
+
       for (const result of fulfilled) {
-        const changedFields = result.value.changed_fields || {}
-        if ('price' in changedFields || 'price_per_kg' in changedFields) {
-          priceChanges++
+        const { changed_fields, sku, vendor_ingredient_id } = result.value
+        const changedFields = changed_fields || {}
+
+        const hasPrice = 'price' in changedFields
+        const hasStock = 'stock_status' in changedFields
+
+        if (hasPrice) priceChanges++
+        if (hasStock) stockChanges++
+
+        // Build detailed change entry
+        const change: DetailedChange = {
+          sku: sku || null,
+          vendor_ingredient_id: vendor_ingredient_id,
         }
-        if ('stock_status' in changedFields) {
-          stockChanges++
+
+        if (hasPrice) {
+          change.price = {
+            old: changedFields.price?.old ?? null,
+            new: changedFields.price?.new ?? null,
+          }
         }
+
+        if (hasStock) {
+          change.stock_status = {
+            old: changedFields.stock_status?.old ?? null,
+            new: changedFields.stock_status?.new ?? null,
+          }
+        }
+
+        // Mark if no changes detected
+        if (!hasPrice && !hasStock) {
+          change.no_changes = true
+        }
+
+        changes.push(change)
       }
 
-      // Build detailed message
+      // Build summary message
       const parts: string[] = []
       if (priceChanges > 0) parts.push(`${priceChanges} price change${priceChanges > 1 ? 's' : ''}`)
       if (stockChanges > 0) parts.push(`${stockChanges} stock change${stockChanges > 1 ? 's' : ''}`)
@@ -90,6 +132,7 @@ export function useUpdateProduct(options?: UseUpdateProductOptions) {
         variants_failed: failures,
         price_changes: priceChanges,
         stock_changes: stockChanges,
+        changes,
       }
     },
 
