@@ -13,8 +13,13 @@ import type { UpdateProductResponse } from '@/lib/api'
 export interface DetailedChange {
   sku: string | null
   vendor_ingredient_id: number
+  // BS/BN/TP: Simple price change
   price?: { old: number | null; new: number | null }
   stock_status?: { old: string | null; new: string | null }
+  // IO: Tiered price changes
+  price_tiers?: Record<string, { old: number | null; new: number | null }>
+  // IO: Warehouse inventory changes
+  inventory?: Record<string, { old: number | null; new: number | null }>
   no_changes?: boolean
 }
 
@@ -82,38 +87,65 @@ export function useUpdateProduct(options?: UseUpdateProductOptions) {
         const { changed_fields, sku, vendor_ingredient_id } = result.value
         const changedFields = changed_fields || {}
 
-        const hasPrice = 'price' in changedFields
-        const hasStock = 'stock_status' in changedFields
+        // Check if this is an IO response (has 'variants' array)
+        if (changedFields.variants && Array.isArray(changedFields.variants)) {
+          // IO returns variant-level changes in a different format
+          for (const variantChange of changedFields.variants) {
+            const change: DetailedChange = {
+              sku: variantChange.sku || null,
+              vendor_ingredient_id: variantChange.vendor_ingredient_id,
+            }
 
-        if (hasPrice) priceChanges++
-        if (hasStock) stockChanges++
+            // IO: price tiers (e.g., {"0-24 kg": {old: 50, new: 48}})
+            if (variantChange.price_tiers && Object.keys(variantChange.price_tiers).length > 0) {
+              change.price_tiers = variantChange.price_tiers
+              priceChanges++
+            }
 
-        // Build detailed change entry
-        const change: DetailedChange = {
-          sku: sku || null,
-          vendor_ingredient_id: vendor_ingredient_id,
-        }
+            // IO: warehouse inventory (e.g., {"chino": {old: 125, new: 100}})
+            if (variantChange.inventory && Object.keys(variantChange.inventory).length > 0) {
+              change.inventory = variantChange.inventory
+              stockChanges++
+            }
 
-        if (hasPrice) {
-          change.price = {
-            old: changedFields.price?.old ?? null,
-            new: changedFields.price?.new ?? null,
+            change.no_changes = variantChange.no_changes ?? false
+
+            changes.push(change)
           }
-        }
+        } else {
+          // BS/BN/TP: standard price/stock_status format
+          const hasPrice = 'price' in changedFields
+          const hasStock = 'stock_status' in changedFields
 
-        if (hasStock) {
-          change.stock_status = {
-            old: changedFields.stock_status?.old ?? null,
-            new: changedFields.stock_status?.new ?? null,
+          if (hasPrice) priceChanges++
+          if (hasStock) stockChanges++
+
+          const change: DetailedChange = {
+            sku: sku || null,
+            vendor_ingredient_id: vendor_ingredient_id,
           }
-        }
 
-        // Mark if no changes detected
-        if (!hasPrice && !hasStock) {
-          change.no_changes = true
-        }
+          if (hasPrice) {
+            change.price = {
+              old: changedFields.price?.old ?? null,
+              new: changedFields.price?.new ?? null,
+            }
+          }
 
-        changes.push(change)
+          if (hasStock) {
+            change.stock_status = {
+              old: changedFields.stock_status?.old ?? null,
+              new: changedFields.stock_status?.new ?? null,
+            }
+          }
+
+          // Mark if no changes detected
+          if (!hasPrice && !hasStock) {
+            change.no_changes = true
+          }
+
+          changes.push(change)
+        }
       }
 
       // Build summary message

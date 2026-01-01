@@ -15,6 +15,9 @@ from api.services.product_updater import (
     update_single_product,
     get_product_info,
     extract_handle_from_url,
+    compare_io_price_tiers,
+    compare_io_inventory,
+    build_io_parent_sku,
 )
 
 
@@ -227,6 +230,242 @@ class TestIntegration:
         assert 'success' in data
         assert 'message' in data
         assert 'duration_ms' in data
+
+
+class TestIOProductUpdate:
+    """Test IngredientsOnline-specific update functions."""
+
+    def test_build_io_parent_sku(self):
+        """Test building parent SKU from variant SKU."""
+        # Variant SKU: product_id-variant_code-attr_id-manufacturer_id
+        # Parent SKU: product_id-MANUFACTURERNAME-manufacturer_id
+        variant_sku = '59410-100-10312-11455'
+        manufacturer = 'Sunnycare'
+
+        parent_sku = build_io_parent_sku(variant_sku, manufacturer)
+
+        assert parent_sku == '59410-SUNNYCARE-11455'
+
+    def test_build_io_parent_sku_with_spaces(self):
+        """Test parent SKU with manufacturer name containing spaces."""
+        variant_sku = '12345-100-10000-99999'
+        manufacturer = 'Some Company Name'
+
+        parent_sku = build_io_parent_sku(variant_sku, manufacturer)
+
+        # Should uppercase and remove spaces
+        assert parent_sku == '12345-SOMECOMPANYNAME-99999'
+
+    def test_build_io_parent_sku_invalid(self):
+        """Test parent SKU with invalid variant SKU."""
+        # Too few parts
+        assert build_io_parent_sku('12345', 'Manufacturer') is None
+        assert build_io_parent_sku('12345-100', 'Manufacturer') is None
+
+        # Missing manufacturer
+        assert build_io_parent_sku('12345-100-200-300', None) is None
+        assert build_io_parent_sku('12345-100-200-300', '') is None
+
+    def test_compare_io_price_tiers_no_change(self):
+        """Test price tier comparison with no changes."""
+        old_tiers = [
+            {'min_quantity': 0, 'price': 50.0, 'price_per_kg': 50.0},
+            {'min_quantity': 25, 'price': 45.0, 'price_per_kg': 45.0},
+            {'min_quantity': 50, 'price': 40.0, 'price_per_kg': 40.0},
+        ]
+        new_tiers = [
+            {'min_quantity': 0, 'price': 50.0, 'price_per_kg': 50.0},
+            {'min_quantity': 25, 'price': 45.0, 'price_per_kg': 45.0},
+            {'min_quantity': 50, 'price': 40.0, 'price_per_kg': 40.0},
+        ]
+
+        result = compare_io_price_tiers(old_tiers, new_tiers)
+
+        assert result['has_changes'] is False
+        assert result['tiers'] == {}
+
+    def test_compare_io_price_tiers_with_changes(self):
+        """Test price tier comparison with price changes."""
+        old_tiers = [
+            {'min_quantity': 0, 'price': 50.0, 'price_per_kg': 50.0},
+            {'min_quantity': 25, 'price': 45.0, 'price_per_kg': 45.0},
+        ]
+        new_tiers = [
+            {'min_quantity': 0, 'price': 48.0, 'price_per_kg': 48.0},  # Changed
+            {'min_quantity': 25, 'price': 45.0, 'price_per_kg': 45.0},  # Same
+        ]
+
+        result = compare_io_price_tiers(old_tiers, new_tiers)
+
+        assert result['has_changes'] is True
+        assert '0-24 kg' in result['tiers']
+        assert result['tiers']['0-24 kg'] == {'old': 50.0, 'new': 48.0}
+        assert '25-49 kg' not in result['tiers']  # No change
+
+    def test_compare_io_price_tiers_new_tier(self):
+        """Test price tier comparison when new tier is added."""
+        old_tiers = [
+            {'min_quantity': 0, 'price': 50.0, 'price_per_kg': 50.0},
+        ]
+        new_tiers = [
+            {'min_quantity': 0, 'price': 50.0, 'price_per_kg': 50.0},
+            {'min_quantity': 100, 'price': 35.0, 'price_per_kg': 35.0},  # New
+        ]
+
+        result = compare_io_price_tiers(old_tiers, new_tiers)
+
+        assert result['has_changes'] is True
+        assert '100+ kg' in result['tiers']
+        assert result['tiers']['100+ kg'] == {'old': None, 'new': 35.0}
+
+    def test_compare_io_inventory_no_change(self):
+        """Test inventory comparison with no changes."""
+        old_inv = {'chino': 125.0, 'edison': 50.0}
+        new_inv = {'chino': 125.0, 'edison': 50.0}
+
+        result = compare_io_inventory(old_inv, new_inv)
+
+        assert result['has_changes'] is False
+        assert result['warehouses'] == {}
+
+    def test_compare_io_inventory_with_changes(self):
+        """Test inventory comparison with quantity changes."""
+        old_inv = {'chino': 125.0, 'edison': 50.0}
+        new_inv = {'chino': 100.0, 'edison': 50.0}  # Chino decreased
+
+        result = compare_io_inventory(old_inv, new_inv)
+
+        assert result['has_changes'] is True
+        assert 'chino' in result['warehouses']
+        assert result['warehouses']['chino'] == {'old': 125.0, 'new': 100.0}
+        assert 'edison' not in result['warehouses']
+
+    def test_compare_io_inventory_new_warehouse(self):
+        """Test inventory comparison with new warehouse."""
+        old_inv = {'chino': 125.0}
+        new_inv = {'chino': 125.0, 'edison': 50.0}  # Edison is new
+
+        result = compare_io_inventory(old_inv, new_inv)
+
+        assert result['has_changes'] is True
+        assert 'edison' in result['warehouses']
+        assert result['warehouses']['edison'] == {'old': 0, 'new': 50.0}
+
+    def test_compare_io_inventory_stockout(self):
+        """Test inventory comparison when stock goes to zero."""
+        old_inv = {'chino': 125.0}
+        new_inv = {'chino': 0.0}
+
+        result = compare_io_inventory(old_inv, new_inv)
+
+        assert result['has_changes'] is True
+        assert result['warehouses']['chino'] == {'old': 125.0, 'new': 0.0}
+
+    def test_compare_io_inventory_empty(self):
+        """Test inventory comparison with empty inventories."""
+        result = compare_io_inventory({}, {})
+        assert result['has_changes'] is False
+
+        result = compare_io_inventory({}, {'chino': 100.0})
+        assert result['has_changes'] is True
+
+
+class TestIOClient:
+    """Test the IO API client."""
+
+    def test_io_client_auth_missing_credentials(self):
+        """Test IOClient fails gracefully with missing credentials."""
+        from api.services.io_client import IOClient
+
+        # Temporarily clear credentials
+        original_email = os.environ.pop('IO_EMAIL', None)
+        original_password = os.environ.pop('IO_PASSWORD', None)
+
+        try:
+            client = IOClient()
+            success, error = client.authenticate()
+
+            assert success is False
+            assert 'not configured' in error.lower()
+        finally:
+            # Restore credentials
+            if original_email:
+                os.environ['IO_EMAIL'] = original_email
+            if original_password:
+                os.environ['IO_PASSWORD'] = original_password
+
+    def test_extract_variant_prices(self):
+        """Test extracting prices from product data."""
+        from api.services.io_client import extract_variant_prices
+
+        # Mock ConfigurableProduct data
+        product_data = {
+            '__typename': 'ConfigurableProduct',
+            'sku': '59410-SUNNYCARE-11455',
+            'variants': [
+                {
+                    'product': {
+                        'sku': '59410-100-10312-11455',
+                        'name': 'Test Product 25kg Drum',
+                        'price_range': {
+                            'minimum_price': {
+                                'final_price': {'value': 50.0}
+                            }
+                        },
+                        'price_tiers': [
+                            {'quantity': 25, 'final_price': {'value': 45.0}},
+                            {'quantity': 50, 'final_price': {'value': 40.0}},
+                        ]
+                    }
+                }
+            ]
+        }
+
+        prices = extract_variant_prices(product_data, '59410-100-10312-11455')
+
+        assert len(prices) == 3
+        assert prices[0]['min_quantity'] == 0
+        assert prices[0]['price'] == 50.0
+        assert prices[1]['min_quantity'] == 25
+        assert prices[1]['price'] == 45.0
+        assert prices[2]['min_quantity'] == 50
+        assert prices[2]['price'] == 40.0
+
+    def test_extract_variant_prices_not_found(self):
+        """Test extracting prices for non-existent variant."""
+        from api.services.io_client import extract_variant_prices
+
+        product_data = {
+            '__typename': 'ConfigurableProduct',
+            'variants': []
+        }
+
+        prices = extract_variant_prices(product_data, 'NON-EXISTENT-SKU')
+
+        assert prices == []
+
+    def test_extract_variant_inventory(self):
+        """Test extracting inventory from API response."""
+        from api.services.io_client import extract_variant_inventory
+
+        inventory_data = [
+            {'sku': '59410-100-10312-11455', 'source_name': 'Chino', 'quantity': 125.0},
+            {'sku': '59410-100-10312-11455', 'source_name': 'Edison', 'quantity': 50.0},
+            {'sku': '59410-101-10312-11455', 'source_name': 'Chino', 'quantity': 200.0},
+        ]
+
+        inventory = extract_variant_inventory(inventory_data, '59410-100-10312-11455')
+
+        assert len(inventory) == 2
+        assert inventory['chino'] == 125.0
+        assert inventory['edison'] == 50.0
+
+    def test_extract_variant_inventory_empty(self):
+        """Test extracting inventory when none available."""
+        from api.services.io_client import extract_variant_inventory
+
+        inventory = extract_variant_inventory([], '59410-100-10312-11455')
+        assert inventory == {}
 
 
 if __name__ == '__main__':

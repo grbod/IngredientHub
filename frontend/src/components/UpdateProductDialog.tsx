@@ -314,6 +314,62 @@ export function UpdateProductDialog({
                             </span>
                           </div>
                         )}
+
+                        {/* IO: Price tier changes */}
+                        {change.price_tiers && Object.keys(change.price_tiers).length > 0 && (
+                          <div className="mt-2">
+                            <span className="text-xs text-slate-500 font-medium">Price Tiers:</span>
+                            <div className="mt-1 space-y-0.5">
+                              {Object.entries(change.price_tiers).map(([tier, prices]) => (
+                                <div key={tier} className="flex items-center gap-2 text-xs ml-2">
+                                  <span className="text-slate-600 w-16">{tier}:</span>
+                                  <span className="text-slate-500">${prices.old?.toFixed(2) ?? '—'}</span>
+                                  <svg className="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                                  </svg>
+                                  <span className={
+                                    prices.new !== null && prices.old !== null
+                                      ? prices.new < prices.old
+                                        ? 'text-green-600 font-medium'
+                                        : prices.new > prices.old
+                                          ? 'text-red-600 font-medium'
+                                          : 'text-slate-600'
+                                      : 'text-slate-600'
+                                  }>
+                                    ${prices.new?.toFixed(2) ?? '—'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* IO: Warehouse inventory changes */}
+                        {change.inventory && Object.keys(change.inventory).length > 0 && (
+                          <div className="mt-2">
+                            <span className="text-xs text-slate-500 font-medium">Inventory:</span>
+                            <div className="mt-1 space-y-0.5">
+                              {Object.entries(change.inventory).map(([warehouse, qty]) => (
+                                <div key={warehouse} className="flex items-center gap-2 text-xs ml-2">
+                                  <span className="text-slate-600 w-16 capitalize">{warehouse}:</span>
+                                  <span className="text-slate-500">{qty.old ?? 0} kg</span>
+                                  <svg className="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                                  </svg>
+                                  <span className={
+                                    qty.new !== qty.old
+                                      ? qty.new! > qty.old!
+                                        ? 'text-green-600 font-medium'
+                                        : 'text-amber-600 font-medium'
+                                      : 'text-slate-600'
+                                  }>
+                                    {qty.new ?? 0} kg
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

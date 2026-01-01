@@ -486,17 +486,342 @@ def update_tp_product(conn, vendor_ingredient_id: int, slug: str) -> Dict[str, A
 # IngredientsOnline Update
 # =============================================================================
 
+def get_io_manufacturer_name(cursor, vendor_ingredient_id: int) -> Optional[str]:
+    """Get manufacturer name for an IO product to build parent SKU."""
+    cursor.execute('''
+        SELECT m.name
+        FROM vendoringredients vi
+        JOIN ingredientvariants iv ON vi.variant_id = iv.variant_id
+        JOIN manufacturers m ON iv.manufacturer_id = m.manufacturer_id
+        WHERE vi.vendor_ingredient_id = %s
+    ''', (vendor_ingredient_id,))
+    row = cursor.fetchone()
+    return row['name'] if row else None
+
+
+def build_io_parent_sku(variant_sku: str, manufacturer_name: str) -> Optional[str]:
+    """
+    Build parent SKU from variant SKU and manufacturer name.
+
+    Variant SKU: 59410-100-10312-11455 (product_id-variant_code-attr_id-mfr_id)
+    Parent SKU: 59410-MANUFACTURERNAME-11455
+    """
+    if not variant_sku or not manufacturer_name:
+        return None
+
+    parts = variant_sku.split('-')
+    if len(parts) < 4:
+        return None
+
+    product_id = parts[0]
+    manufacturer_id = parts[-1]
+    # Manufacturer name needs to be uppercase for IO API
+    mfr_name_upper = manufacturer_name.upper().replace(' ', '')
+
+    return f"{product_id}-{mfr_name_upper}-{manufacturer_id}"
+
+
+def get_io_current_price_tiers(cursor, vendor_ingredient_id: int) -> List[Dict]:
+    """Get all price tiers for an IO product."""
+    cursor.execute('''
+        SELECT min_quantity, price, price_per_kg
+        FROM pricetiers
+        WHERE vendor_ingredient_id = %s
+        ORDER BY min_quantity ASC
+    ''', (vendor_ingredient_id,))
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_io_current_inventory(cursor, vendor_ingredient_id: int) -> Dict[str, float]:
+    """Get inventory by warehouse for an IO product."""
+    cursor.execute('''
+        SELECT l.name as warehouse, il.quantity_available
+        FROM inventorylevels il
+        JOIN inventorylocations iloc ON il.inventory_location_id = iloc.inventory_location_id
+        JOIN locations l ON iloc.location_id = l.location_id
+        WHERE iloc.vendor_ingredient_id = %s
+    ''', (vendor_ingredient_id,))
+    return {row['warehouse'].lower(): float(row['quantity_available'] or 0)
+            for row in cursor.fetchall()}
+
+
+def get_io_all_variant_ids(cursor, vendor_ingredient_id: int) -> List[Dict]:
+    """
+    Get all variant IDs for the same IO product.
+    Returns list of {vendor_ingredient_id, sku} for all variants.
+    """
+    # Find the ingredient_id for this variant
+    cursor.execute('''
+        SELECT iv.ingredient_id, vi.vendor_id
+        FROM vendoringredients vi
+        JOIN ingredientvariants iv ON vi.variant_id = iv.variant_id
+        WHERE vi.vendor_ingredient_id = %s
+    ''', (vendor_ingredient_id,))
+    row = cursor.fetchone()
+    if not row:
+        return []
+
+    ingredient_id = row['ingredient_id']
+    vendor_id = row['vendor_id']
+
+    # Get all variants for this ingredient from the same vendor
+    cursor.execute('''
+        SELECT vi.vendor_ingredient_id, vi.sku
+        FROM vendoringredients vi
+        JOIN ingredientvariants iv ON vi.variant_id = iv.variant_id
+        WHERE iv.ingredient_id = %s
+        AND vi.vendor_id = %s
+        AND vi.status = 'active'
+    ''', (ingredient_id, vendor_id))
+
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def compare_io_price_tiers(old_tiers: List[Dict], new_tiers: List[Dict]) -> Dict:
+    """
+    Compare old and new price tiers, return changes.
+
+    Returns: {
+        'tiers': {'0-24 kg': {'old': 50.0, 'new': 48.0}, ...},
+        'has_changes': bool
+    }
+    """
+    changes = {}
+
+    # Build lookup by min_quantity
+    old_by_qty = {t['min_quantity']: t['price'] for t in old_tiers}
+    new_by_qty = {t['min_quantity']: t['price'] for t in new_tiers}
+
+    # Compare all tiers
+    all_qtys = set(old_by_qty.keys()) | set(new_by_qty.keys())
+
+    for qty in sorted(all_qtys):
+        old_price = old_by_qty.get(qty)
+        new_price = new_by_qty.get(qty)
+
+        # Format tier label
+        if qty == 0:
+            tier_label = "0-24 kg"
+        elif qty == 25:
+            tier_label = "25-49 kg"
+        elif qty == 50:
+            tier_label = "50-99 kg"
+        elif qty == 100:
+            tier_label = "100+ kg"
+        else:
+            tier_label = f"{int(qty)}+ kg"
+
+        if old_price != new_price:
+            changes[tier_label] = {'old': old_price, 'new': new_price}
+
+    return {
+        'tiers': changes,
+        'has_changes': bool(changes)
+    }
+
+
+def compare_io_inventory(old_inv: Dict[str, float], new_inv: Dict[str, float]) -> Dict:
+    """
+    Compare old and new inventory by warehouse.
+
+    Returns: {
+        'warehouses': {'chino': {'old': 125.0, 'new': 100.0}, ...},
+        'has_changes': bool
+    }
+    """
+    changes = {}
+    all_warehouses = set(old_inv.keys()) | set(new_inv.keys())
+
+    for wh in sorted(all_warehouses):
+        old_qty = old_inv.get(wh, 0)
+        new_qty = new_inv.get(wh, 0)
+        # Always include all warehouses per user preference
+        # Only mark as changed if actually different
+        if abs(old_qty - new_qty) > 0.01:  # Float comparison tolerance
+            changes[wh] = {'old': old_qty, 'new': new_qty}
+
+    return {
+        'warehouses': changes,
+        'has_changes': bool(changes)
+    }
+
+
+def update_io_price_tiers(cursor, vendor_ingredient_id: int, new_tiers: List[Dict], now_iso: str):
+    """Update price tiers for an IO product."""
+    # Delete old tiers
+    cursor.execute('DELETE FROM pricetiers WHERE vendor_ingredient_id = %s',
+                   (vendor_ingredient_id,))
+
+    # Insert new tiers
+    for tier in new_tiers:
+        cursor.execute('''
+            INSERT INTO pricetiers
+            (vendor_ingredient_id, pricing_model_id, min_quantity, price, price_per_kg, effective_date)
+            VALUES (%s, 3, %s, %s, %s, %s)
+        ''', (vendor_ingredient_id, tier['min_quantity'], tier['price'],
+              tier.get('price_per_kg', tier['price']), now_iso))
+
+
+def update_io_inventory(cursor, vendor_ingredient_id: int, new_inv: Dict[str, float], now_iso: str):
+    """Update warehouse inventory for an IO product."""
+    for warehouse, quantity in new_inv.items():
+        # Find or create location
+        cursor.execute('SELECT location_id FROM locations WHERE LOWER(name) = %s',
+                       (warehouse.lower(),))
+        loc_row = cursor.fetchone()
+        if not loc_row:
+            # Create location if not exists
+            cursor.execute(
+                'INSERT INTO locations (name) VALUES (%s) RETURNING location_id',
+                (warehouse.title(),))
+            location_id = cursor.fetchone()['location_id']
+        else:
+            location_id = loc_row['location_id']
+
+        # Find or create inventory location
+        cursor.execute('''
+            SELECT inventory_location_id FROM inventorylocations
+            WHERE vendor_ingredient_id = %s AND location_id = %s
+        ''', (vendor_ingredient_id, location_id))
+        iloc_row = cursor.fetchone()
+
+        if iloc_row:
+            inv_loc_id = iloc_row['inventory_location_id']
+            # Update existing
+            cursor.execute('''
+                UPDATE inventorylevels
+                SET quantity_available = %s, last_updated = %s
+                WHERE inventory_location_id = %s
+            ''', (quantity, now_iso, inv_loc_id))
+        else:
+            # Insert new inventory location + level
+            cursor.execute('''
+                INSERT INTO inventorylocations (vendor_ingredient_id, location_id)
+                VALUES (%s, %s) RETURNING inventory_location_id
+            ''', (vendor_ingredient_id, location_id))
+            inv_loc_id = cursor.fetchone()['inventory_location_id']
+
+            cursor.execute('''
+                INSERT INTO inventorylevels
+                (inventory_location_id, quantity_available, stock_status, last_updated)
+                VALUES (%s, %s, %s, %s)
+            ''', (inv_loc_id, quantity, 'in_stock' if quantity > 0 else 'out_of_stock', now_iso))
+
+
 def update_io_product(conn, vendor_ingredient_id: int, sku: str) -> Dict[str, Any]:
     """
     Update a single IngredientsOnline product.
-    Note: IO requires authentication - returns not implemented for now.
+
+    Fetches fresh pricing and inventory data from IO's GraphQL API.
+    Updates ALL variants of the same product.
+
+    Returns dict with detailed changes for price tiers and warehouse inventory.
     """
+    import psycopg2.extras
+    from api.services.io_client import (
+        IOClient, extract_variant_prices, extract_variant_inventory
+    )
+
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Authenticate with IO API
+    client = IOClient()
+    auth_success, auth_error = client.authenticate()
+    if not auth_success:
+        return {
+            'success': False,
+            'error': auth_error,
+            'old_values': {},
+            'new_values': {},
+            'changed_fields': {}
+        }
+
+    # Fetch product data using variant SKU (returns ConfigurableProduct)
+    product_data, fetch_error = client.fetch_product_by_sku(sku)
+    if fetch_error:
+        return {
+            'success': False,
+            'error': fetch_error,
+            'old_values': {},
+            'new_values': {},
+            'changed_fields': {}
+        }
+
+    # Extract parent SKU from product response for inventory query
+    parent_sku = product_data.get('sku')
+    if not parent_sku:
+        return {
+            'success': False,
+            'error': 'No SKU in product response',
+            'old_values': {},
+            'new_values': {},
+            'changed_fields': {}
+        }
+
+    # Fetch inventory using parent SKU
+    inventory_data, inv_error = client.fetch_inventory(parent_sku)
+    # Don't fail on inventory error, just proceed with empty inventory
+    if inv_error:
+        inventory_data = []
+
+    # Get all variants for this product
+    all_variants = get_io_all_variant_ids(cursor, vendor_ingredient_id)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    all_changes = []
+
+    for variant in all_variants:
+        vid = variant['vendor_ingredient_id']
+        vsku = variant['sku']
+
+        # Get current values
+        old_tiers = get_io_current_price_tiers(cursor, vid)
+        old_inventory = get_io_current_inventory(cursor, vid)
+
+        # Extract new values from API response
+        new_tiers = extract_variant_prices(product_data, vsku)
+        new_inventory = extract_variant_inventory(inventory_data, vsku)
+
+        # Compare changes
+        price_changes = compare_io_price_tiers(old_tiers, new_tiers)
+        inv_changes = compare_io_inventory(old_inventory, new_inventory)
+
+        # Update database if changes detected
+        if price_changes['has_changes'] and new_tiers:
+            update_io_price_tiers(cursor, vid, new_tiers, now_iso)
+
+        if inv_changes['has_changes'] and new_inventory:
+            update_io_inventory(cursor, vid, new_inventory, now_iso)
+
+        # Update last_seen_at
+        cursor.execute('''
+            UPDATE vendoringredients SET last_seen_at = %s WHERE vendor_ingredient_id = %s
+        ''', (now_iso, vid))
+
+        # Collect change info
+        change_record = {
+            'vendor_ingredient_id': vid,
+            'sku': vsku,
+            'price_tiers': price_changes['tiers'] if price_changes['has_changes'] else None,
+            'inventory': inv_changes['warehouses'] if inv_changes['has_changes'] else None,
+            'no_changes': not price_changes['has_changes'] and not inv_changes['has_changes']
+        }
+        all_changes.append(change_record)
+
+    conn.commit()
+
+    # Build summary
+    variants_with_changes = sum(1 for c in all_changes if not c.get('no_changes'))
+
     return {
-        'success': False,
-        'error': 'IngredientsOnline single-product update not yet implemented (requires auth)',
-        'old_values': {},
+        'success': True,
+        'old_values': {},  # Not used for IO (we use detailed changes)
         'new_values': {},
-        'changed_fields': {}
+        'changed_fields': {
+            'variants': all_changes,
+            'variants_updated': len(all_variants),
+            'variants_with_changes': variants_with_changes
+        }
     }
 
 
