@@ -5,6 +5,7 @@ import { useIngredientDetail } from '@/hooks/useIngredientDetail'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { RefreshButton } from '@/components/UpdateProductDialog'
 import {
   Dialog,
   DialogContent,
@@ -20,7 +21,9 @@ function formatPrice(price: number | null) {
 function formatTimeAgo(dateString: string | null): string {
   if (!dateString) return 'Unknown'
 
-  const date = new Date(dateString)
+  // Database stores UTC timestamps without 'Z' suffix - append it if missing
+  const normalizedDate = dateString.endsWith('Z') ? dateString : dateString + 'Z'
+  const date = new Date(normalizedDate)
   const now = new Date()
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / (1000 * 60))
@@ -401,7 +404,7 @@ export function PriceComparison() {
 
       {/* Product Detail Modal */}
       <Dialog open={!!selectedIngredient} onOpenChange={(open) => !open && setSelectedIngredient(null)}>
-        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-xl">{selectedIngredient?.name}</DialogTitle>
           </DialogHeader>
@@ -441,11 +444,23 @@ export function PriceComparison() {
                     <div key={vendorName} className="border rounded-lg overflow-hidden">
                       <div className={`${style.headerBg} text-white px-4 py-2 font-semibold text-sm flex items-center justify-between`}>
                         <span>{vendorName}</span>
-                        {mostRecentUpdate && (
-                          <span className="text-xs font-normal opacity-80">
-                            Updated {formatTimeAgo(mostRecentUpdate)}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {mostRecentUpdate && (
+                            <span className="text-xs font-normal opacity-80">
+                              Updated {formatTimeAgo(mostRecentUpdate)}
+                            </span>
+                          )}
+                          {tiers.length > 0 && (
+                            <RefreshButton
+                              vendorIngredientIds={[...new Set(tiers.map(t => t.vendor_ingredient_id))]}
+                              vendorName={vendorName}
+                              sku={tiers[0].sku}
+                              ingredientId={selectedIngredient?.id}
+                              variant="ghost"
+                              className="h-6 w-6 p-0 text-white/70 hover:text-white hover:bg-white/20"
+                            />
+                          )}
+                        </div>
                       </div>
                       <div className="p-3">
                         <table className="w-full text-sm">
@@ -487,6 +502,26 @@ export function PriceComparison() {
                                 </td>
                                 <td className="py-1.5 text-right">
                                   {(() => {
+                                    // For IO, show warehouse inventory stacked vertically
+                                    if (isIO && warehouseInv.length > 0) {
+                                      return (
+                                        <div className="flex flex-col gap-0.5 items-end">
+                                          {warehouseInv.map((inv, idx) => (
+                                            <span
+                                              key={idx}
+                                              className={`text-xs px-2 py-0.5 rounded ${
+                                                inv.quantity_available > 0
+                                                  ? 'bg-green-50 text-green-700'
+                                                  : 'bg-slate-100 text-slate-500'
+                                              }`}
+                                            >
+                                              {inv.warehouse}: {inv.quantity_available}kg
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )
+                                    }
+                                    // For other vendors, show simple stock status
                                     const tierStock = ingredientDetail.simpleInventory.find(
                                       inv => inv.vendor_ingredient_id === tier.vendor_ingredient_id
                                     )
@@ -533,8 +568,8 @@ export function PriceComparison() {
                           </tbody>
                         </table>
 
-                        {/* Warehouse inventory for IO */}
-                        {warehouseInv.length > 0 && (
+                        {/* Warehouse inventory for non-IO vendors (IO shows inline in Stock column) */}
+                        {!isIO && warehouseInv.length > 0 && (
                           <div className="mt-3 pt-3 border-t border-slate-100">
                             <div className="text-xs text-slate-500 mb-2">Warehouse Inventory</div>
                             <div className="flex flex-wrap gap-2">

@@ -3,6 +3,7 @@ import { useIngredientDetail } from '@/hooks/useIngredientDetail'
 import type { PriceTier, InventoryLevel, SimpleInventory } from '@/hooks/useIngredientDetail'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { RefreshButton } from '@/components/UpdateProductDialog'
 import {
   Table,
   TableBody,
@@ -120,9 +121,10 @@ interface VendorPricingCardProps {
   priceTiers: PriceTier[]
   warehouseInventory: InventoryLevel[]
   simpleInventory: SimpleInventory[]
+  ingredientId?: number
 }
 
-function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleInventory }: VendorPricingCardProps) {
+function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleInventory, ingredientId }: VendorPricingCardProps) {
   // Detect if this is a tiered pricing vendor (IO) or per-pack vendor (BS/BN/TP)
   const isIOVendor = vendorName === 'IngredientsOnline'
 
@@ -379,11 +381,21 @@ function VendorPricingCard({ vendorName, priceTiers, warehouseInventory, simpleI
               {tiersBySku.size} variant{tiersBySku.size !== 1 ? 's' : ''}
             </span>
           </div>
-          {mostRecentUpdate && (
-            <span className="text-xs text-slate-400">
-              Updated {formatLastUpdated(mostRecentUpdate)}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {mostRecentUpdate && (
+              <span className="text-xs text-slate-400">
+                Updated {formatLastUpdated(mostRecentUpdate)}
+              </span>
+            )}
+            {priceTiers.length > 0 && (
+              <RefreshButton
+                vendorIngredientIds={[...new Set(priceTiers.map(t => t.vendor_ingredient_id))]}
+                vendorName={vendorName}
+                sku={priceTiers[0].sku}
+                ingredientId={ingredientId}
+              />
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -507,6 +519,7 @@ export function ProductDetail() {
               priceTiers={tiersByVendor.get(vendorName) || []}
               warehouseInventory={detail.warehouseInventory}
               simpleInventory={detail.simpleInventory}
+              ingredientId={ingredientId ? parseInt(ingredientId, 10) : undefined}
             />
           ))}
         </div>

@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .routes import alerts, runs, scrapers
+from .routes import alerts, products, runs, scrapers
 from .services.database import db_pool
 
 
@@ -71,6 +71,7 @@ app.add_middleware(
 app.include_router(scrapers.router)
 app.include_router(runs.router)
 app.include_router(alerts.router)
+app.include_router(products.router)
 
 
 class HealthResponse(BaseModel):

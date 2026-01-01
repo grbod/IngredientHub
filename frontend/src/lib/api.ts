@@ -139,6 +139,20 @@ export interface GetAlertsParams {
   offset?: number
 }
 
+export interface UpdateProductResponse {
+  success: boolean
+  vendor_ingredient_id: number
+  vendor_id: number | null
+  vendor_name: string | null
+  sku: string | null
+  old_values: Record<string, unknown>
+  new_values: Record<string, unknown>
+  changed_fields: Record<string, { old: unknown; new: unknown }>
+  message: string
+  duration_ms: number
+  error?: string | null
+}
+
 // ============================================================================
 // API Error
 // ============================================================================
@@ -286,5 +300,30 @@ export const api = {
    */
   getAlertSummary: (): Promise<AlertSummary> => {
     return fetchApi<AlertSummary>('/alerts/summary')
+  },
+
+  /**
+   * Update a single product's price and inventory from vendor source
+   */
+  updateSingleProduct: (vendorIngredientId: number): Promise<UpdateProductResponse> => {
+    return fetchApi<UpdateProductResponse>('/products/update-single', {
+      method: 'POST',
+      body: JSON.stringify({ vendor_ingredient_id: vendorIngredientId }),
+    })
+  },
+
+  /**
+   * Get basic product info for a vendor_ingredient_id
+   */
+  getProductInfo: (vendorIngredientId: number): Promise<{
+    vendor_ingredient_id: number
+    vendor_id: number
+    sku: string | null
+    raw_product_name: string | null
+    last_seen_at: string | null
+    vendor_name: string
+    product_url: string | null
+  }> => {
+    return fetchApi(`/products/${vendorIngredientId}`)
   },
 }
