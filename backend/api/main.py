@@ -57,7 +57,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # Vite dev server
+        "http://localhost:5174",  # Vite fallback port
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://localhost:3000",  # Alternative dev port
     ],
     allow_credentials=True,

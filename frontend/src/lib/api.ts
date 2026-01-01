@@ -19,6 +19,13 @@ const getApiBase = (): string => {
 
 const API_BASE = getApiBase()
 
+/**
+ * Get the full URL for a log streaming endpoint (for EventSource)
+ */
+export const getLogStreamUrl = (vendorId: number): string => {
+  return `${API_BASE}/scrapers/${vendorId}/logs`
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -195,7 +202,7 @@ export const api = {
     vendorId: number,
     options?: TriggerScraperOptions
   ): Promise<TriggerScraperResponse> => {
-    return fetchApi<TriggerScraperResponse>(`/scrapers/${vendorId}/trigger`, {
+    return fetchApi<TriggerScraperResponse>(`/scrapers/${vendorId}/run`, {
       method: 'POST',
       body: JSON.stringify(options || {}),
     })
@@ -206,6 +213,13 @@ export const api = {
    */
   getScraperStatus: (vendorId: number): Promise<ScraperStatus> => {
     return fetchApi<ScraperStatus>(`/scrapers/${vendorId}/status`)
+  },
+
+  /**
+   * Stop a running scraper for a vendor
+   */
+  stopScraper: (vendorId: number): Promise<{ message: string; vendor_id: number; vendor_name: string; pid: number }> => {
+    return fetchApi(`/scrapers/${vendorId}/stop`, { method: 'POST' })
   },
 
   /**
