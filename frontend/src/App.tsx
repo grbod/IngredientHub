@@ -107,8 +107,8 @@ function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <main className="container mx-auto px-6 py-8">{children}</main>
-      <footer className="border-t border-slate-200 bg-white/50 py-4">
-        <div className="container mx-auto px-6 flex justify-center">
+      <footer className="border-t border-slate-200 bg-white/50 py-3">
+        <div className="container mx-auto px-6 flex justify-end">
           <span className="text-xs text-slate-400 font-mono">
             {import.meta.env.VITE_GIT_SHA
               ? `build ${import.meta.env.VITE_GIT_SHA.slice(0, 7)}`
