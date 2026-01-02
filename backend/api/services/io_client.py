@@ -162,6 +162,10 @@ class IOClient:
               __typename
               name
               sku
+              url_key
+              url_rewrites {
+                url
+              }
               price_range {
                 minimum_price {
                   regular_price { value currency }
@@ -303,20 +307,7 @@ def extract_variant_prices(product_data: Dict, variant_sku: str) -> List[Dict]:
         for variant in variants:
             var_product = variant.get('product', {})
             if var_product.get('sku') == variant_sku:
-                # Get base price from price_range
-                price_range = var_product.get('price_range', {})
-                min_price = price_range.get('minimum_price', {})
-                base_price = min_price.get('final_price', {}).get('value', 0)
-
-                # Add base tier (0 quantity)
-                if base_price > 0:
-                    tiers.append({
-                        'min_quantity': 0,
-                        'price': base_price,
-                        'price_per_kg': base_price  # IO prices are per kg
-                    })
-
-                # Add volume tiers
+                # Extract volume tiers from API (these have actual min quantities like 25, 100, 500 kg)
                 price_tiers = var_product.get('price_tiers', [])
                 for tier in price_tiers:
                     qty = tier.get('quantity', 0)
@@ -327,22 +318,24 @@ def extract_variant_prices(product_data: Dict, variant_sku: str) -> List[Dict]:
                             'price': price,
                             'price_per_kg': price
                         })
+
+                # Fallback: if no volume tiers, use base price with min_quantity=25 (typical IO minimum)
+                if not tiers:
+                    price_range = var_product.get('price_range', {})
+                    min_price = price_range.get('minimum_price', {})
+                    base_price = min_price.get('final_price', {}).get('value', 0)
+                    if base_price > 0:
+                        tiers.append({
+                            'min_quantity': 25,  # IO minimum order is typically 25kg
+                            'price': base_price,
+                            'price_per_kg': base_price
+                        })
                 break
 
     # Handle SimpleProduct
     elif product_data.get('__typename') == 'SimpleProduct':
         if product_data.get('sku') == variant_sku:
-            price_range = product_data.get('price_range', {})
-            min_price = price_range.get('minimum_price', {})
-            base_price = min_price.get('final_price', {}).get('value', 0)
-
-            if base_price > 0:
-                tiers.append({
-                    'min_quantity': 0,
-                    'price': base_price,
-                    'price_per_kg': base_price
-                })
-
+            # Extract volume tiers from API
             price_tiers = product_data.get('price_tiers', [])
             for tier in price_tiers:
                 qty = tier.get('quantity', 0)
@@ -352,6 +345,18 @@ def extract_variant_prices(product_data: Dict, variant_sku: str) -> List[Dict]:
                         'min_quantity': qty,
                         'price': price,
                         'price_per_kg': price
+                    })
+
+            # Fallback: if no volume tiers, use base price with min_quantity=25
+            if not tiers:
+                price_range = product_data.get('price_range', {})
+                min_price = price_range.get('minimum_price', {})
+                base_price = min_price.get('final_price', {}).get('value', 0)
+                if base_price > 0:
+                    tiers.append({
+                        'min_quantity': 25,  # IO minimum order is typically 25kg
+                        'price': base_price,
+                        'price_per_kg': base_price
                     })
 
     # Sort by min_quantity
@@ -383,6 +388,34 @@ def extract_variant_inventory(inventory_data: List[Dict], variant_sku: str) -> D
     return inventory
 
 
+def get_product_url(product_data: Dict) -> Optional[str]:
+    """
+    Build canonical product URL from GraphQL response.
+
+    Returns:
+        Full product URL or None if URL cannot be determined.
+    """
+    base_url = "https://www.ingredientsonline.com"
+
+    # Try url_rewrites first (most reliable)
+    url_rewrites = product_data.get('url_rewrites', [])
+    if url_rewrites and len(url_rewrites) > 0:
+        url_path = url_rewrites[0].get('url', '')
+        if url_path:
+            if not url_path.startswith('/'):
+                url_path = '/' + url_path
+            if not url_path.endswith('/'):
+                url_path = url_path + '/'
+            return f"{base_url}{url_path}"
+
+    # Fallback to url_key
+    url_key = product_data.get('url_key', '')
+    if url_key:
+        return f"{base_url}/{url_key}/"
+
+    return None
+
+
 def get_all_variant_skus(product_data: Dict) -> List[str]:
     """
     Get all variant SKUs from a product.
@@ -405,3 +438,212 @@ def get_all_variant_skus(product_data: Dict) -> List[str]:
             skus.append(sku)
 
     return skus
+
+
+# =============================================================================
+# LAZY PLAYWRIGHT FALLBACK
+# Only initialized if API fails - NOT loaded at module import time
+# =============================================================================
+
+# Module-level state for Playwright (lazy initialized)
+_pw_browser = None
+_pw_page = None
+_pw_context = None
+_pw_authenticated = False
+
+
+def _init_playwright_lazy() -> bool:
+    """
+    Lazy-initialize Playwright browser for fallback inventory scraping.
+    Only called when API fails. Uses headed browser (headless=False) to avoid bot detection.
+
+    Returns True if authentication successful.
+    """
+    global _pw_browser, _pw_page, _pw_context, _pw_authenticated
+
+    # Already initialized?
+    if _pw_authenticated and _pw_page:
+        try:
+            _pw_page.url  # Check if browser still alive
+            return True
+        except:
+            _pw_authenticated = False
+
+    email = os.environ.get('IO_EMAIL')
+    password = os.environ.get('IO_PASSWORD')
+
+    if not email or not password:
+        print("  [Playwright] No credentials available", flush=True)
+        return False
+
+    try:
+        # Lazy import - only load Playwright when needed
+        from playwright.sync_api import sync_playwright
+        import time as _time
+
+        print("  [Playwright] Initializing browser for fallback...", flush=True)
+
+        playwright = sync_playwright().start()
+
+        # Headed browser to avoid bot detection
+        _pw_browser = playwright.chromium.launch(
+            headless=False,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox'
+            ]
+        )
+
+        _pw_context = _pw_browser.new_context(
+            viewport={'width': 1280, 'height': 800},
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        )
+
+        _pw_page = _pw_context.new_page()
+        _pw_page.set_default_timeout(60000)
+
+        # Navigate to login page
+        login_url = "https://www.ingredientsonline.com/customer/account/login"
+        _pw_page.goto(login_url + "/", wait_until="domcontentloaded", timeout=60000)
+
+        # Fill login form
+        try:
+            email_input = _pw_page.get_by_label("Email", exact=False)
+            email_input.fill(email)
+        except:
+            _pw_page.locator('input[name="login[username]"]').fill(email)
+
+        try:
+            password_input = _pw_page.get_by_label("Password", exact=False)
+            password_input.fill(password)
+        except:
+            _pw_page.locator('input[name="login[password]"]').fill(password)
+
+        # Click login button
+        for selector in ['button[type="submit"]', 'button:has-text("Sign In")', '.action.login.primary']:
+            try:
+                loc = _pw_page.locator(selector).first
+                if loc.is_visible():
+                    loc.click()
+                    break
+            except:
+                continue
+
+        _pw_page.wait_for_load_state('domcontentloaded')
+        _time.sleep(2)
+
+        # Verify login by checking for prices
+        _pw_page.goto("https://www.ingredientsonline.com/products/?in_stock[filter]=1,1&size=10",
+                     wait_until='domcontentloaded', timeout=60000)
+
+        content = _pw_page.content()
+        if '$' in content and 'log in to see pricing' not in content.lower():
+            _pw_authenticated = True
+            print("  [Playwright] Authenticated successfully", flush=True)
+            return True
+        else:
+            print("  [Playwright] Authentication failed", flush=True)
+            return False
+
+    except Exception as e:
+        print(f"  [Playwright] Init error: {e}", flush=True)
+        return False
+
+
+def fetch_inventory_playwright_fallback(product_url: str) -> Tuple[List[Dict], str]:
+    """
+    Fallback: Scrape inventory data from product page HTML using Playwright.
+    Only called when API fails. Lazy-initializes browser on first call.
+
+    Args:
+        product_url: Full URL to the product page
+
+    Returns:
+        Tuple of (inventory_list, error_message)
+        inventory_list contains dicts with 'sku', 'source_code', 'quantity'
+    """
+    import re
+    import time as _time
+
+    global _pw_page, _pw_authenticated
+
+    # Lazy initialize browser if needed
+    if not _pw_authenticated:
+        if not _init_playwright_lazy():
+            return [], "Playwright initialization failed"
+
+    if not _pw_page:
+        return [], "Playwright page not available"
+
+    try:
+        print(f"  [Playwright] Fetching inventory from {product_url}", flush=True)
+
+        _pw_page.goto(product_url, timeout=30000, wait_until='domcontentloaded')
+
+        # Wait for inventory table
+        try:
+            _pw_page.wait_for_selector('.inventory-table', timeout=10000)
+        except:
+            try:
+                _pw_page.wait_for_selector('text=WAREHOUSE', timeout=5000)
+            except:
+                _time.sleep(3)
+
+        content = _pw_page.content()
+        inventory_list = []
+
+        # Parse warehouse data from HTML
+        warehouse_patterns = [
+            (r'Chino,?\s*CA', 'chino'),
+            (r'Edison,?\s*NJ', 'nj'),
+            (r'Southwest', 'sw'),
+        ]
+
+        for pattern, source_code in warehouse_patterns:
+            # Look for location followed by quantity in table cells
+            match = re.search(
+                rf'{pattern}.*?</(?:span|label|td)>.*?(?:class="table-item"[^>]*>|<td[^>]*>)\s*(\d+)\s*</td>',
+                content, re.IGNORECASE | re.DOTALL
+            )
+            if match:
+                qty = int(match.group(1)) if match.group(1) else 0
+                if qty > 0:
+                    inventory_list.append({
+                        'sku': '',  # Will be filled in by caller
+                        'source_code': source_code,
+                        'source_name': source_code,
+                        'quantity': qty
+                    })
+
+        if inventory_list:
+            print(f"  [Playwright] Found {len(inventory_list)} warehouse entries", flush=True)
+        else:
+            print("  [Playwright] No inventory data found in HTML", flush=True)
+
+        return inventory_list, ""
+
+    except Exception as e:
+        error_msg = f"Playwright scrape error: {e}"
+        print(f"  [Playwright] {error_msg}", flush=True)
+        return [], error_msg
+
+
+def cleanup_playwright():
+    """Clean up Playwright browser resources."""
+    global _pw_browser, _pw_page, _pw_context, _pw_authenticated
+
+    try:
+        if _pw_page:
+            _pw_page.close()
+        if _pw_context:
+            _pw_context.close()
+        if _pw_browser:
+            _pw_browser.close()
+    except:
+        pass
+
+    _pw_browser = None
+    _pw_page = None
+    _pw_context = None
+    _pw_authenticated = False

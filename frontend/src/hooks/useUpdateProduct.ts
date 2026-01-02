@@ -3,7 +3,7 @@
  * Supports batch updates of multiple variants with detailed change tracking.
  */
 
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type { UpdateProductResponse } from '@/lib/api'
 
@@ -51,7 +51,6 @@ interface UseUpdateProductOptions {
  * - Returns mutation state for UI feedback
  */
 export function useUpdateProduct(options?: UseUpdateProductOptions) {
-  const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async (vendorIngredientIds: number[]): Promise<BatchUpdateResponse> => {
@@ -126,16 +125,18 @@ export function useUpdateProduct(options?: UseUpdateProductOptions) {
           }
 
           if (hasPrice) {
+            const priceField = changedFields.price as { old?: number | null; new?: number | null } | undefined
             change.price = {
-              old: changedFields.price?.old ?? null,
-              new: changedFields.price?.new ?? null,
+              old: priceField?.old ?? null,
+              new: priceField?.new ?? null,
             }
           }
 
           if (hasStock) {
+            const stockField = changedFields.stock_status as { old?: string | null; new?: string | null } | undefined
             change.stock_status = {
-              old: changedFields.stock_status?.old ?? null,
-              new: changedFields.stock_status?.new ?? null,
+              old: stockField?.old ?? null,
+              new: stockField?.new ?? null,
             }
           }
 

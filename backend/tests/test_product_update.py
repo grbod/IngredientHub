@@ -423,13 +423,12 @@ class TestIOClient:
 
         prices = extract_variant_prices(product_data, '59410-100-10312-11455')
 
-        assert len(prices) == 3
-        assert prices[0]['min_quantity'] == 0
-        assert prices[0]['price'] == 50.0
-        assert prices[1]['min_quantity'] == 25
-        assert prices[1]['price'] == 45.0
-        assert prices[2]['min_quantity'] == 50
-        assert prices[2]['price'] == 40.0
+        # Should only return actual price tiers from API (no synthetic 0-tier)
+        assert len(prices) == 2
+        assert prices[0]['min_quantity'] == 25
+        assert prices[0]['price'] == 45.0
+        assert prices[1]['min_quantity'] == 50
+        assert prices[1]['price'] == 40.0
 
     def test_extract_variant_prices_not_found(self):
         """Test extracting prices for non-existent variant."""

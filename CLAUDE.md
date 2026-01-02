@@ -22,12 +22,14 @@ Scrapers for B2B wholesale ingredient marketplaces:
 │   │   │   ├── runs.py             # GET /runs, GET /runs/{id}, GET /runs/{id}/alerts
 │   │   │   └── alerts.py           # GET /alerts, GET /alerts/summary
 │   │   └── services/
-│   │       └── database.py         # DatabasePool connection management
+│   │       ├── database.py         # DatabasePool connection management
+│   │       ├── io_client.py        # IO GraphQL client for single-product refresh
+│   │       └── product_updater.py  # Single-product update orchestration
 │   ├── app.py                      # Streamlit frontend (legacy)
 │   ├── .env                        # Credentials (not in git)
 │   ├── venv/                       # Python virtual environment
 │   ├── ingredients.db              # SQLite fallback (if no Supabase)
-│   ├── tests/                      # Pytest test suite (198 tests, 12 files)
+│   ├── tests/                      # Pytest test suite (226 tests, 13 files)
 │   └── output/                     # CSV/JSON output files (not in git)
 ├── frontend/                       # React 19 + Vite + TypeScript
 │   ├── src/
@@ -263,11 +265,48 @@ active (status='active', stale_since=NULL) → triggers REACTIVATED alert
 | GET | `/` | List alerts with filters |
 | GET | `/summary` | Alert counts by severity/type/vendor |
 
+**Products** (`/api/products/`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/update` | Single-product refresh (batch variant updates) |
+| GET | `/{vendor_ingredient_id}` | Get product info for refresh dialog |
+
 ### Running the API
 ```bash
 cd backend
 source venv/bin/activate
 uvicorn api.main:app --reload --port 8000
+```
+
+### Single-Product Refresh
+
+Manual refresh of individual products from the ProductDetail page, without running full scrapers.
+
+**Architecture:**
+- `io_client.py` - GraphQL client for IO product/inventory fetching with lazy Playwright fallback
+- `product_updater.py` - Orchestrates updates for all 4 vendors with change tracking
+- `UpdateProductDialog.tsx` - React dialog showing progress, changes, and results
+
+**Supported Vendors:**
+| Vendor | Method | Change Tracking |
+|--------|--------|-----------------|
+| IngredientsOnline | GraphQL API + Playwright fallback | Price tiers, inventory per warehouse |
+| BulkSupplements | Shopify JSON API | Price, stock status |
+| BoxNutra | Shopify JSON + HTML scrape | Price, stock status |
+| TrafaPharma | HTML parsing | Price per size |
+
+**IO Playwright Fallback:**
+When the IO GraphQL API fails (auth issues, rate limits), a headed Playwright browser is **lazily initialized** to scrape inventory from the product page HTML. The browser is NOT loaded at startup - only when needed.
+
+**Warehouse Normalization:**
+The IO API returns warehouse codes that must be normalized to canonical names:
+```python
+LOCATION_MAP = {
+    'nj': 'Edison',       # API code → canonical name
+    'edison': 'Edison',
+    'chino': 'Chino',
+    'sw': 'Southwest',
+}
 ```
 
 ---
@@ -303,6 +342,7 @@ uvicorn api.main:app --reload --port 8000
 | `useAlerts(options)` | Alert list with severity/type filters |
 | `useScraperStatus(vendorId)` | Real-time scraper status (5s polling) |
 | `useTriggerScraper()` | Mutation to start scraper run |
+| `useUpdateProduct()` | Mutation for single-product refresh with change tracking |
 
 ### Vendor Color Scheme
 - **IngredientsOnline:** Sky blue (`bg-sky-50`, `text-sky-700`)
@@ -454,7 +494,7 @@ ScrapeRuns → ScrapeAlerts
 ## Testing
 
 ### Test Suite Overview
-- **198 tests** across 12 files
+- **226 tests** across 13 files
 - All major functions tested against all 4 scrapers
 
 ### Test Files
@@ -472,6 +512,7 @@ ScrapeRuns → ScrapeAlerts
 | `test_edge_cases.py` | Error handling |
 | `test_product_filtering.py` | Vendor-specific filters |
 | `test_connection_errors.py` | Database reconnection |
+| `test_product_update.py` | Single-product refresh, IO client, change tracking |
 
 ### Running Tests
 ```bash
@@ -552,12 +593,14 @@ Code 160 (0.05kg):    0.25 kg
 **Important**: When aggregating inventory, keep the highest quantity per warehouse to avoid sample sizes overwriting bulk inventory.
 
 #### Warehouse Codes
-| Code | Location |
-|------|----------|
-| `chino` | Chino, CA |
-| `nj` | New Jersey |
-| `sw` | Southwest |
-| `edison` | Edison, NJ |
+| Code | Canonical Name | Location |
+|------|----------------|----------|
+| `chino` | Chino | Chino, CA |
+| `nj` | Edison | Edison, NJ (same as 'edison') |
+| `edison` | Edison | Edison, NJ |
+| `sw` | Southwest | Southwest region |
+
+**Note:** API returns lowercase codes ('nj', 'chino', 'sw'). Always normalize to canonical names before database storage.
 
 ### Common Issues
 

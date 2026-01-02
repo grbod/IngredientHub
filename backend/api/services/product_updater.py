@@ -664,16 +664,30 @@ def update_io_price_tiers(cursor, vendor_ingredient_id: int, new_tiers: List[Dic
 
 def update_io_inventory(cursor, vendor_ingredient_id: int, new_inv: Dict[str, float], now_iso: str):
     """Update warehouse inventory for an IO product."""
+    # Warehouse name normalization (matches IO_scraper.py get_location_id())
+    # API returns codes like 'nj', 'chino', 'sw' - normalize to canonical names
+    location_map = {
+        'nj': 'Edison',
+        'edison': 'Edison',
+        'chino': 'Chino',
+        'sw': 'Southwest',
+        'southwest': 'Southwest',
+    }
+
     for warehouse, quantity in new_inv.items():
-        # Find or create location
+        # Normalize warehouse name to canonical form
+        warehouse_lower = warehouse.lower()
+        canonical_name = location_map.get(warehouse_lower, warehouse.title())
+
+        # Find or create location using canonical name
         cursor.execute('SELECT location_id FROM locations WHERE LOWER(name) = %s',
-                       (warehouse.lower(),))
+                       (canonical_name.lower(),))
         loc_row = cursor.fetchone()
         if not loc_row:
-            # Create location if not exists
+            # Create location with canonical name
             cursor.execute(
                 'INSERT INTO locations (name) VALUES (%s) RETURNING location_id',
-                (warehouse.title(),))
+                (canonical_name,))
             location_id = cursor.fetchone()['location_id']
         else:
             location_id = loc_row['location_id']
@@ -760,9 +774,26 @@ def update_io_product(conn, vendor_ingredient_id: int, sku: str) -> Dict[str, An
 
     # Fetch inventory using parent SKU
     inventory_data, inv_error = client.fetch_inventory(parent_sku)
-    # Don't fail on inventory error, just proceed with empty inventory
-    if inv_error:
-        inventory_data = []
+
+    # If API inventory fetch failed, try Playwright fallback (lazy initialized)
+    if inv_error or not inventory_data:
+        from api.services.io_client import get_product_url, fetch_inventory_playwright_fallback
+
+        product_url = get_product_url(product_data)
+        if product_url:
+            print(f"  API inventory failed, trying Playwright fallback for {product_url}", flush=True)
+            fallback_data, fallback_error = fetch_inventory_playwright_fallback(product_url)
+            if fallback_data and not fallback_error:
+                inventory_data = fallback_data
+                inv_error = ""  # Clear the error since fallback succeeded
+            else:
+                # Playwright also failed - proceed with empty inventory
+                print(f"  Playwright fallback also failed: {fallback_error}", flush=True)
+                inventory_data = []
+        else:
+            # No product URL available, can't use Playwright
+            print("  No product URL available for Playwright fallback", flush=True)
+            inventory_data = []
 
     # Get all variants for this product
     all_variants = get_io_all_variant_ids(cursor, vendor_ingredient_id)

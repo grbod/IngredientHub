@@ -42,12 +42,14 @@ export function UpdateProductDialog({
   vendorIngredientIds,
   vendorName,
   sku,
-  ingredientId,
+  ingredientId: _ingredientId,
   onSuccess,
 }: UpdateProductDialogProps) {
+  void _ingredientId // Reserved for future use
   const queryClient = useQueryClient()
   const [elapsedMs, setElapsedMs] = useState(0)
   const [isUpdating, setIsUpdating] = useState(false)
+  const [isClosing, setIsClosing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successData, setSuccessData] = useState<BatchUpdateResponse | null>(null)
   const startTimeRef = useRef<number | null>(null)
@@ -75,18 +77,20 @@ export function UpdateProductDialog({
     },
   })
 
-  // Handle Done button click - refetch to ensure fresh data before closing
-  const handleDone = async () => {
-    // Use refetchQueries instead of invalidateQueries - this waits for the refetch to complete
-    // so the modal will show fresh data when reopened
-    await Promise.all([
-      queryClient.refetchQueries({ queryKey: ['ingredient-detail'], type: 'all' }),
-      queryClient.refetchQueries({ queryKey: ['price-comparison'], type: 'all' }),
-      queryClient.refetchQueries({ queryKey: ['ingredients'], type: 'all' }),
-    ])
+  // Handle Done button click - close immediately, invalidate queries in background
+  const handleDone = () => {
+    // Prevent multiple clicks
+    if (isClosing) return
+    setIsClosing(true)
 
+    // Close dialog immediately for responsive feel
     onOpenChange(false)
     onSuccess?.()
+
+    // Invalidate queries in background (don't await - let them refetch after dialog closes)
+    queryClient.invalidateQueries({ queryKey: ['ingredient-detail'] })
+    queryClient.invalidateQueries({ queryKey: ['price-comparison'] })
+    queryClient.invalidateQueries({ queryKey: ['ingredients'] })
   }
 
   // Start update when dialog opens
@@ -102,6 +106,7 @@ export function UpdateProductDialog({
       // Reset state when dialog closes
       setElapsedMs(0)
       setIsUpdating(false)
+      setIsClosing(false)
       setError(null)
       setSuccessData(null)
       startTimeRef.current = null
@@ -378,7 +383,7 @@ export function UpdateProductDialog({
 
               {/* Done button */}
               <div className="text-center mt-4">
-                <Button onClick={handleDone}>
+                <Button onClick={handleDone} disabled={isClosing}>
                   Done
                 </Button>
               </div>
