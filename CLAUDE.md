@@ -59,7 +59,7 @@ pip install pandas requests psycopg2-binary playwright beautifulsoup4 python-dot
 cat > .env << 'EOF'
 IO_EMAIL=your_email@example.com
 IO_PASSWORD=your_password
-SUPABASE_DB_URL=postgresql://postgres.PROJECT_ID:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
 EOF
 ```
 

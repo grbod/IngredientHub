@@ -22,8 +22,10 @@ const API_BASE = getApiBase()
 /**
  * Get the full URL for a log streaming endpoint (for EventSource)
  */
-export const getLogStreamUrl = (vendorId: number): string => {
-  return `${API_BASE}/scrapers/${vendorId}/logs`
+export const getLogStreamUrl = (vendorId: number, file?: string | null): string => {
+  if (!file) return `${API_BASE}/scrapers/${vendorId}/logs`
+  const params = new URLSearchParams({ file })
+  return `${API_BASE}/scrapers/${vendorId}/logs?${params.toString()}`
 }
 
 // ============================================================================
@@ -37,14 +39,20 @@ export interface ScrapeRun {
   status: 'pending' | 'running' | 'completed' | 'failed'
   started_at: string | null
   completed_at: string | null
-  products_scraped: number
-  products_updated: number
-  products_new: number
-  products_removed: number
-  errors_count: number
-  duration_seconds: number | null
-  triggered_by: 'manual' | 'scheduled' | 'api'
-  options?: Record<string, unknown>
+  products_discovered?: number
+  products_processed?: number
+  products_skipped?: number
+  products_failed?: number
+  variants_new?: number
+  variants_updated?: number
+  variants_unchanged?: number
+  variants_stale?: number
+  variants_reactivated?: number
+  price_alerts?: number
+  stock_alerts?: number
+  data_quality_alerts?: number
+  is_full_scrape?: boolean
+  max_products_limit?: number
 }
 
 export interface ScrapeAlert {
@@ -104,11 +112,15 @@ export interface ScraperStatus {
   vendor_id: number
   vendor_name: string
   is_running: boolean
-  current_run_id: number | null
-  progress: number | null
-  current_product: string | null
-  started_at: string | null
-  estimated_completion: string | null
+  pid?: number | null
+}
+
+export interface ScraperLogFile {
+  filename: string
+  modified_at: string
+  size_bytes: number
+  is_active: boolean
+  summary: Record<string, string>
 }
 
 export interface TriggerScraperOptions {
@@ -118,9 +130,10 @@ export interface TriggerScraperOptions {
 }
 
 export interface TriggerScraperResponse {
-  run_id: number
-  status: string
   message: string
+  pid: number
+  vendor_id: number
+  vendor_name: string
 }
 
 export interface GetRunsParams {
@@ -237,6 +250,15 @@ export const api = {
   },
 
   /**
+   * Get available historical log files for a vendor
+   */
+  getScraperLogHistory: (vendorId: number, limit: number = 20): Promise<ScraperLogFile[]> => {
+    const searchParams = new URLSearchParams()
+    searchParams.set('limit', String(limit))
+    return fetchApi<ScraperLogFile[]>(`/scrapers/${vendorId}/logs/history?${searchParams.toString()}`)
+  },
+
+  /**
    * Get cron scheduling suggestions for all vendors
    */
   getCronSuggestions: (): Promise<CronSuggestion[]> => {
@@ -246,7 +268,7 @@ export const api = {
   /**
    * Get scrape run history
    */
-  getRuns: (params?: GetRunsParams): Promise<{ data: ScrapeRun[]; total: number }> => {
+  getRuns: (params?: GetRunsParams): Promise<{ runs: ScrapeRun[]; total: number; limit: number; offset: number }> => {
     const searchParams = new URLSearchParams()
     if (params?.vendor_id) searchParams.set('vendor_id', String(params.vendor_id))
     if (params?.status) searchParams.set('status', params.status)
@@ -254,7 +276,7 @@ export const api = {
     if (params?.offset) searchParams.set('offset', String(params.offset))
 
     const query = searchParams.toString()
-    return fetchApi<{ data: ScrapeRun[]; total: number }>(
+    return fetchApi<{ runs: ScrapeRun[]; total: number; limit: number; offset: number }>(
       `/runs${query ? `?${query}` : ''}`
     )
   },
@@ -269,14 +291,14 @@ export const api = {
   /**
    * Get alerts for a specific run
    */
-  getRunAlerts: (runId: number): Promise<ScrapeAlert[]> => {
-    return fetchApi<ScrapeAlert[]>(`/runs/${runId}/alerts`)
+  getRunAlerts: (runId: number): Promise<{ alerts: ScrapeAlert[]; total: number }> => {
+    return fetchApi<{ alerts: ScrapeAlert[]; total: number }>(`/runs/${runId}/alerts`)
   },
 
   /**
    * Get alerts with optional filters
    */
-  getAlerts: (params?: GetAlertsParams): Promise<{ data: ScrapeAlert[]; total: number }> => {
+  getAlerts: (params?: GetAlertsParams): Promise<{ alerts: ScrapeAlert[]; total: number; limit: number; offset: number }> => {
     const searchParams = new URLSearchParams()
     if (params?.vendor_id) searchParams.set('vendor_id', String(params.vendor_id))
     if (params?.alert_types?.length) {
@@ -290,7 +312,7 @@ export const api = {
     if (params?.offset) searchParams.set('offset', String(params.offset))
 
     const query = searchParams.toString()
-    return fetchApi<{ data: ScrapeAlert[]; total: number }>(
+    return fetchApi<{ alerts: ScrapeAlert[]; total: number; limit: number; offset: number }>(
       `/alerts${query ? `?${query}` : ''}`
     )
   },
@@ -326,4 +348,183 @@ export const api = {
   }> => {
     return fetchApi(`/products/${vendorIngredientId}`)
   },
+
+  // ===========================================================================
+  // Data routes (replaces Supabase JS SDK queries)
+  // ===========================================================================
+
+  /**
+   * Get paginated ingredients with vendor info and stock status
+   */
+  getIngredients: (params?: {
+    search?: string
+    limit?: number
+    offset?: number
+  }): Promise<{ data: IngredientData[]; total: number }> => {
+    const searchParams = new URLSearchParams()
+    if (params?.search) searchParams.set('search', params.search)
+    if (params?.limit) searchParams.set('limit', String(params.limit))
+    if (params?.offset) searchParams.set('offset', String(params.offset))
+    const query = searchParams.toString()
+    return fetchApi(`/ingredients${query ? `?${query}` : ''}`)
+  },
+
+  /**
+   * Get full ingredient detail with price tiers and inventory
+   */
+  getIngredientDetail: (id: number): Promise<IngredientDetailData | null> => {
+    return fetchApi(`/ingredients/${id}`)
+  },
+
+  /**
+   * Get cross-vendor price comparison
+   */
+  getPriceComparison: (params?: {
+    search?: string
+  }): Promise<PriceComparisonData[]> => {
+    const searchParams = new URLSearchParams()
+    if (params?.search) searchParams.set('search', params.search)
+    const query = searchParams.toString()
+    return fetchApi(`/price-comparison${query ? `?${query}` : ''}`)
+  },
+
+  /**
+   * Get paginated vendor ingredients (products)
+   */
+  getVendorIngredients: (params?: {
+    vendorId?: number
+    search?: string
+    limit?: number
+    offset?: number
+  }): Promise<{ data: VendorIngredientData[]; total: number }> => {
+    const searchParams = new URLSearchParams()
+    if (params?.vendorId) searchParams.set('vendor_id', String(params.vendorId))
+    if (params?.search) searchParams.set('search', params.search)
+    if (params?.limit) searchParams.set('limit', String(params.limit))
+    if (params?.offset) searchParams.set('offset', String(params.offset))
+    const query = searchParams.toString()
+    return fetchApi(`/vendor-ingredients${query ? `?${query}` : ''}`)
+  },
+
+  /**
+   * Get all vendors
+   */
+  getVendors: (): Promise<VendorData[]> => {
+    return fetchApi('/vendors')
+  },
+
+  /**
+   * Get vendor stats (product counts, last scraped)
+   */
+  getVendorStats: (): Promise<VendorStatsData[]> => {
+    return fetchApi('/vendors/stats')
+  },
+
+  /**
+   * Get all categories
+   */
+  getCategories: (): Promise<CategoryData[]> => {
+    return fetchApi('/categories')
+  },
+}
+
+// ============================================================================
+// Data Types (for data routes)
+// ============================================================================
+
+export interface IngredientData {
+  ingredient_id: number
+  name: string
+  category_name: string | null
+  category_id: number | null
+  status: string | null
+  vendors: string[]
+  vendor_count: number
+  stock_status: 'in_stock' | 'out_of_stock' | 'unknown'
+}
+
+export interface IngredientDetailData {
+  ingredient_id: number
+  name: string
+  category_name: string | null
+  priceTiers: PriceTierData[]
+  warehouseInventory: InventoryLevelData[]
+  simpleInventory: SimpleInventoryData[]
+}
+
+export interface PriceTierData {
+  vendor_ingredient_id: number
+  vendor_id: number
+  vendor_name: string
+  sku: string | null
+  packaging: string | null
+  pack_size: number
+  min_quantity: number | null
+  price: number | null
+  price_per_kg: number | null
+  product_url: string | null
+  last_seen_at: string | null
+}
+
+export interface InventoryLevelData {
+  vendor_ingredient_id: number
+  vendor_name: string
+  sku: string | null
+  warehouse: string
+  quantity_available: number
+  stock_status: string | null
+}
+
+export interface SimpleInventoryData {
+  vendor_ingredient_id: number
+  vendor_name: string
+  sku: string | null
+  stock_status: string | null
+}
+
+export interface PriceComparisonData {
+  ingredient_name: string
+  ingredient_id: number
+  vendors: {
+    vendor_id: number
+    vendor_name: string
+    sku: string | null
+    product_name: string | null
+    best_price_per_kg: number | null
+    min_order_qty: number | null
+    last_seen: string | null
+  }[]
+}
+
+export interface VendorIngredientData {
+  vendor_ingredient_id: number
+  sku: string | null
+  raw_product_name: string | null
+  status: string | null
+  last_seen_at: string | null
+  vendor_id: number
+  vendor_name: string
+}
+
+export interface VendorData {
+  vendor_id: number
+  name: string
+  pricing_model: string | null
+  status: string | null
+}
+
+export interface VendorStatsData {
+  vendor_id: number
+  name: string
+  pricing_model: string | null
+  status: string | null
+  productCount: number
+  variantCount: number
+  lastScraped: string | null
+}
+
+export interface CategoryData {
+  category_id: number
+  name: string
+  description: string | null
 }

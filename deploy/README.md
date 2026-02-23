@@ -52,7 +52,7 @@ Fill in:
 ```env
 IO_EMAIL=your_email@example.com
 IO_PASSWORD=your_password
-SUPABASE_DB_URL=postgresql://postgres.PROJECT_ID:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
 ```
 
 ### 3. Start Services
@@ -71,8 +71,6 @@ In your GitHub repo, go to Settings → Secrets and variables → Actions, and a
 | `VPS_HOST` | Your VPS IP address |
 | `VPS_USER` | SSH username (e.g., `ingredienthub` or your user) |
 | `VPS_SSH_KEY` | Private SSH key for deployment |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Supabase anonymous key |
 
 ### 5. Generate SSH Key for Deployment
 

@@ -2,7 +2,7 @@
 Database service for PostgreSQL connection management.
 
 Loads credentials from .env file and provides connection pooling
-for the Supabase PostgreSQL database.
+for the PostgreSQL database.
 """
 
 import os
@@ -23,7 +23,7 @@ load_dotenv(_env_path)
 
 def get_database_url() -> Optional[str]:
     """Get the PostgreSQL database URL from environment variables."""
-    return os.getenv("SUPABASE_DB_URL")
+    return os.getenv("DATABASE_URL")
 
 
 class DatabasePool:
@@ -43,7 +43,7 @@ class DatabasePool:
         self._db_url = get_database_url()
         if not self._db_url:
             raise ValueError(
-                "SUPABASE_DB_URL not found in environment. "
+                "DATABASE_URL not found in environment. "
                 "Please set it in backend/.env"
             )
         self._connect()

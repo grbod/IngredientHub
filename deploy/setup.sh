@@ -137,8 +137,8 @@ if [ ! -f "$APP_DIR/backend/.env" ]; then
 IO_EMAIL=your_email@example.com
 IO_PASSWORD=your_password
 
-# Supabase PostgreSQL connection
-SUPABASE_DB_URL=postgresql://postgres.PROJECT_ID:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+# PostgreSQL connection
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require
 EOF
     chown $APP_USER:$APP_USER $APP_DIR/backend/.env
     chmod 600 $APP_DIR/backend/.env
@@ -274,8 +274,7 @@ echo "3. Set up GitHub Secrets for CI/CD:"
 echo "   - VPS_HOST: $(curl -s ifconfig.me)"
 echo "   - VPS_USER: $APP_USER (or your SSH user)"
 echo "   - VPS_SSH_KEY: Your private SSH key"
-echo "   - SUPABASE_URL: Your Supabase project URL"
-echo "   - SUPABASE_ANON_KEY: Your Supabase anon key"
+echo "   - DATABASE_URL: Your PostgreSQL connection string"
 echo ""
 echo "4. Push to main branch to trigger deployment"
 echo ""

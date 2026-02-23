@@ -48,8 +48,6 @@ jobs:
         env:
           # Production API is same-origin, so use relative path
           VITE_API_URL: '/api'
-          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           VITE_GIT_SHA: ${{ github.sha }}
         run: npm run build
 

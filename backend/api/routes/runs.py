@@ -63,6 +63,7 @@ class RunAlert(BaseModel):
     message: Optional[str] = None
     created_at: Optional[datetime] = None
     product_url: Optional[str] = None
+    ingredient_id: Optional[int] = None
 
 
 class RunAlertsResponse(BaseModel):
@@ -250,9 +251,11 @@ def get_run_alerts(run_id: int):
                 sa.change_percent,
                 sa.message,
                 sa.created_at,
-                ss.product_url
+                ss.product_url,
+                iv.ingredient_id
             FROM scrapealerts sa
             LEFT JOIN vendoringredients vi ON sa.vendor_ingredient_id = vi.vendor_ingredient_id
+            LEFT JOIN ingredientvariants iv ON vi.variant_id = iv.variant_id
             LEFT JOIN scrapesources ss ON vi.current_source_id = ss.source_id
             WHERE sa.run_id = %s
             ORDER BY

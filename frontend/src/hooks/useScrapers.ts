@@ -5,6 +5,7 @@ import {
   getLogStreamUrl,
   type ScraperStatus,
   type CronSuggestion,
+  type ScraperLogFile,
   type TriggerScraperOptions,
   type TriggerScraperResponse,
 } from '@/lib/api'
@@ -21,8 +22,11 @@ export function useScraperStatus(vendorId: number | null) {
       return result
     },
     enabled: vendorId !== null,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
     refetchInterval: 5000,
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
   })
 }
 
@@ -92,6 +96,21 @@ export function useCronSuggestions() {
 }
 
 /**
+ * Fetch recent scraper log files for a vendor.
+ */
+export function useScraperLogHistory(vendorId: number | null, limit: number = 20) {
+  return useQuery({
+    queryKey: ['scraper-log-history', vendorId, limit],
+    queryFn: async () => {
+      if (!vendorId) return []
+      return api.getScraperLogHistory(vendorId, limit)
+    },
+    enabled: vendorId !== null,
+    staleTime: 30000,
+  })
+}
+
+/**
  * Connect to scraper log stream via SSE
  * Returns log lines and connection status
  */
@@ -100,7 +119,8 @@ export type LogConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 
 export function useScraperLogs(
   vendorId: number | null,
   enabled: boolean = false,
-  onComplete?: () => void
+  onComplete?: () => void,
+  logFile?: string | null
 ) {
   const [logs, setLogs] = useState<string[]>([])
   const [status, setStatus] = useState<LogConnectionStatus>('disconnected')
@@ -124,7 +144,7 @@ export function useScraperLogs(
     setError(null)
     setLogs([])
 
-    const url = getLogStreamUrl(vendorId)
+    const url = getLogStreamUrl(vendorId, logFile)
     const eventSource = new EventSource(url)
     eventSourceRef.current = eventSource
 
@@ -159,7 +179,7 @@ export function useScraperLogs(
       setStatus('error')
       eventSource.close()
     }
-  }, [vendorId])
+  }, [vendorId, logFile])
 
   const disconnect = useCallback(() => {
     hasConnectedRef.current = false
@@ -190,7 +210,7 @@ export function useScraperLogs(
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, vendorId])
+  }, [enabled, vendorId, logFile])
 
   return {
     logs,
@@ -205,4 +225,10 @@ export function useScraperLogs(
 }
 
 // Re-export types for convenience
-export type { ScraperStatus, CronSuggestion, TriggerScraperOptions, TriggerScraperResponse }
+export type {
+  ScraperStatus,
+  CronSuggestion,
+  ScraperLogFile,
+  TriggerScraperOptions,
+  TriggerScraperResponse
+}

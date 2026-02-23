@@ -40,7 +40,7 @@ export function useRunAlerts(runId: number | null) {
     queryFn: async () => {
       if (!runId) return []
       const result = await api.getRunAlerts(runId)
-      return result
+      return result.alerts
     },
     enabled: runId !== null,
   })

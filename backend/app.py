@@ -44,9 +44,9 @@ load_env()
 
 def get_connection():
     """Get database connection with reconnection support."""
-    db_url = os.environ.get('SUPABASE_DB_URL')
+    db_url = os.environ.get('DATABASE_URL')
     if not db_url:
-        st.error("SUPABASE_DB_URL not found in .env file")
+        st.error("DATABASE_URL not found in .env file")
         st.stop()
 
     # Check if we have an existing connection in session state

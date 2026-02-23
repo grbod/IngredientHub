@@ -6,15 +6,17 @@ and streaming log output via SSE.
 """
 
 import asyncio
+import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -27,6 +29,7 @@ LOG_DIR = Path("/var/log/ingredienthub") if IS_LINUX else Path(__file__).parent.
 
 # Backend directory path
 BACKEND_DIR = Path(__file__).parent.parent.parent
+STATE_DIR = BACKEND_DIR / ".runtime"
 
 # Vendor configuration
 VENDORS = {
@@ -71,6 +74,15 @@ class CronSuggestion(BaseModel):
     command: str
 
 
+class LogFileInfo(BaseModel):
+    """Metadata for a scraper log file."""
+    filename: str
+    modified_at: datetime
+    size_bytes: int
+    is_active: bool
+    summary: Dict[str, str]
+
+
 def is_process_running(pid: int) -> bool:
     """Check if a process with the given PID is still running (not zombie)."""
     try:
@@ -99,8 +111,65 @@ def is_process_running(pid: int) -> bool:
         return False
 
 
+def state_file_for_vendor(vendor_id: int) -> Path:
+    """Get state file path for a vendor scraper process."""
+    return STATE_DIR / f"scraper_{vendor_id}.json"
+
+
+def persist_running_scraper(vendor_id: int, pid: int, log_file: Path) -> None:
+    """Persist running scraper PID/log file to disk for restart recovery."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        state = {"pid": pid, "log_file": str(log_file)}
+        state_file_for_vendor(vendor_id).write_text(json.dumps(state))
+    except Exception:
+        # Persistence is best-effort; scraper execution should not fail on disk-state errors.
+        pass
+
+
+def remove_persisted_scraper(vendor_id: int) -> None:
+    """Remove persisted scraper state file if present."""
+    try:
+        state_file = state_file_for_vendor(vendor_id)
+        if state_file.exists():
+            state_file.unlink()
+    except Exception:
+        pass
+
+
+def hydrate_running_scraper(vendor_id: int) -> None:
+    """
+    Rehydrate in-memory scraper state from persisted state file if valid.
+    """
+    if vendor_id in running_scrapers:
+        return
+
+    state_file = state_file_for_vendor(vendor_id)
+    if not state_file.exists():
+        return
+
+    try:
+        state = json.loads(state_file.read_text())
+        pid = int(state["pid"])
+        log_path = Path(state["log_file"])
+        if not log_path.is_absolute():
+            log_path = LOG_DIR / log_path
+    except Exception:
+        remove_persisted_scraper(vendor_id)
+        return
+
+    if is_process_running(pid):
+        running_scrapers[vendor_id] = (pid, log_path)
+    else:
+        remove_persisted_scraper(vendor_id)
+
+
 def clean_stale_processes() -> None:
     """Remove PIDs from tracking that are no longer running."""
+    # Rehydrate from persisted files first (handles API process restarts).
+    for vendor_id in VENDORS:
+        hydrate_running_scraper(vendor_id)
+
     stale_vendors = [
         vendor_id
         for vendor_id, (pid, _) in running_scrapers.items()
@@ -108,6 +177,7 @@ def clean_stale_processes() -> None:
     ]
     for vendor_id in stale_vendors:
         del running_scrapers[vendor_id]
+        remove_persisted_scraper(vendor_id)
 
 
 def get_latest_log_file(vendor_id: int) -> Optional[Path]:
@@ -126,6 +196,59 @@ def get_latest_log_file(vendor_id: int) -> Optional[Path]:
     # Sort by modification time, most recent first
     log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return log_files[0]
+
+
+def get_vendor_log_files(vendor_id: int, limit: int = 20) -> List[Path]:
+    """Get vendor log files sorted by modified time (newest first)."""
+    if vendor_id not in VENDORS:
+        return []
+
+    script_base = VENDORS[vendor_id]["script"].replace(".py", "")
+    log_files = list(LOG_DIR.glob(f"{script_base}_*.log"))
+    log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return log_files[:limit]
+
+
+def parse_log_summary(log_path: Path) -> Dict[str, str]:
+    """Extract summary key/value metrics from the scraper statistics report."""
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except Exception:
+        return {}
+
+    summary: Dict[str, str] = {}
+    in_report = False
+
+    # The report is near the end; scanning tail keeps parsing cheap.
+    for line in lines[-1200:]:
+        text = line.strip()
+        if "SCRAPE STATISTICS REPORT" in text:
+            in_report = True
+            continue
+
+        if not in_report:
+            continue
+
+        if not text or text.startswith("===") or text.startswith("---"):
+            continue
+
+        if ":" in text:
+            key, value = text.split(":", 1)
+            key_norm = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+            if key_norm:
+                summary[key_norm] = value.strip()
+
+    # Useful tail fallback values if report parse is sparse.
+    for line in reversed(lines[-200:]):
+        text = line.strip()
+        if text.startswith("Completed at:"):
+            summary.setdefault("completed_at", text.split(":", 1)[1].strip())
+        elif text.startswith("Total products scraped:"):
+            summary.setdefault("total_products_scraped", text.split(":", 1)[1].strip())
+        elif text.startswith("Total variants saved:"):
+            summary.setdefault("total_variants_saved", text.split(":", 1)[1].strip())
+
+    return summary
 
 
 async def tail_log_file(log_path: Path, vendor_id: int):
@@ -250,6 +373,7 @@ def run_scraper(vendor_id: int, request: RunScraperRequest = None):
                 start_new_session=True,
             )
         running_scrapers[vendor_id] = (process.pid, log_file)
+        persist_running_scraper(vendor_id, process.pid, log_file)
 
         return RunScraperResponse(
             message=f"Started {vendor['name']} scraper (log: {log_file})",
@@ -340,6 +464,7 @@ def stop_scraper(vendor_id: int):
         # Send SIGTERM to gracefully stop the process
         os.kill(pid, 15)  # SIGTERM
         del running_scrapers[vendor_id]
+        remove_persisted_scraper(vendor_id)
 
         return StopScraperResponse(
             message=f"Stopped {vendor['name']} scraper",
@@ -351,14 +476,54 @@ def stop_scraper(vendor_id: int):
         # Process might have already exited
         if vendor_id in running_scrapers:
             del running_scrapers[vendor_id]
+        remove_persisted_scraper(vendor_id)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to stop scraper: {str(e)}"
         )
 
 
+@router.get("/{vendor_id}/logs/history", response_model=List[LogFileInfo])
+def list_log_history(
+    vendor_id: int,
+    limit: int = Query(20, ge=1, le=100, description="Max number of files to return"),
+):
+    """
+    List available log files for a vendor with parsed summary metadata.
+    """
+    if vendor_id not in VENDORS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Vendor {vendor_id} not found. Valid IDs: {list(VENDORS.keys())}"
+        )
+
+    clean_stale_processes()
+
+    active_log: Optional[Path] = None
+    if vendor_id in running_scrapers:
+        _, active_log = running_scrapers[vendor_id]
+
+    files = get_vendor_log_files(vendor_id, limit=limit)
+    items: List[LogFileInfo] = []
+    for log_file in files:
+        stat = log_file.stat()
+        is_active = bool(active_log and active_log.resolve() == log_file.resolve())
+        items.append(LogFileInfo(
+            filename=log_file.name,
+            modified_at=datetime.fromtimestamp(stat.st_mtime),
+            size_bytes=stat.st_size,
+            is_active=is_active,
+            summary=parse_log_summary(log_file),
+        ))
+
+    return items
+
+
 @router.get("/{vendor_id}/logs")
-async def stream_logs(vendor_id: int):
+async def stream_logs(
+    vendor_id: int,
+    file: Optional[str] = Query(None, description="Optional specific log filename to stream"),
+):
     """
     Stream scraper logs via Server-Sent Events (SSE).
 
@@ -380,8 +545,18 @@ async def stream_logs(vendor_id: int):
     # Clean up stale process entries
     clean_stale_processes()
 
-    # Get log file path - prefer active run's log, fall back to most recent
-    if vendor_id in running_scrapers:
+    # Select log file path:
+    # - If explicit file is provided, use it.
+    # - Otherwise prefer active run's log, then fall back to most recent.
+    if file:
+        script_base = VENDORS[vendor_id]["script"].replace(".py", "")
+        if Path(file).name != file or not file.startswith(f"{script_base}_") or not file.endswith(".log"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid log filename for {VENDORS[vendor_id]['name']}"
+            )
+        log_path = LOG_DIR / file
+    elif vendor_id in running_scrapers:
         _, log_path = running_scrapers[vendor_id]
     else:
         log_path = get_latest_log_file(vendor_id)

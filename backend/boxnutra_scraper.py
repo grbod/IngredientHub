@@ -141,7 +141,7 @@ USE_POSTGRES = True  # Set to False to force SQLite
 
 def get_postgres_url() -> Optional[str]:
     """Get PostgreSQL connection URL from environment."""
-    return os.environ.get('SUPABASE_DB_URL')
+    return os.environ.get('DATABASE_URL')
 
 
 # =============================================================================
@@ -172,7 +172,7 @@ class DatabaseConnection:
             try:
                 self._conn = psycopg2.connect(self.postgres_url)
                 self._is_postgres = True
-                print("  Connected to PostgreSQL (Supabase)", flush=True)
+                print("  Connected to PostgreSQL", flush=True)
             except Exception as e:
                 print(f"  PostgreSQL connection failed: {e}", flush=True)
                 print("  Falling back to SQLite...", flush=True)
@@ -183,7 +183,7 @@ class DatabaseConnection:
             if not HAS_POSTGRES:
                 print("  (psycopg2 not installed, using SQLite)", flush=True)
             elif not self.postgres_url:
-                print("  (SUPABASE_DB_URL not set, using SQLite)", flush=True)
+                print("  (DATABASE_URL not set, using SQLite)", flush=True)
             self._conn = sqlite3.connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
             self._is_postgres = False

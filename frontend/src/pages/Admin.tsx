@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useScrapeRuns } from '@/hooks/useScrapeRuns'
+import { useScrapeRuns, useScrapeRun, useRunAlerts } from '@/hooks/useScrapeRuns'
 import { useAlerts } from '@/hooks/useAlerts'
-import { useScraperStatus, useTriggerScraper, useStopScraper, useScraperLogs, type LogConnectionStatus } from '@/hooks/useScrapers'
+import { useScraperStatus, useTriggerScraper, useStopScraper, useScraperLogs, useScraperLogHistory, type LogConnectionStatus } from '@/hooks/useScrapers'
+import type { ScrapeRun } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +35,7 @@ const VENDORS = [
   { id: 3, name: 'BoxNutra', short: 'BN' },
   { id: 4, name: 'TrafaPharma', short: 'TP' },
 ] as const
+const TERMINAL_STORAGE_KEY = 'admin-terminal-tabs-v1'
 
 // Light theme vendor colors (matching Dashboard)
 const vendorStyles: Record<string, {
@@ -151,8 +153,38 @@ function formatRelativeTime(dateStr: string | null): string {
   return date.toLocaleDateString()
 }
 
+function formatDateTime(dateStr: string | null): string {
+  if (!dateStr) return '—'
+  return new Date(dateStr).toLocaleString()
+}
+
 function getVendorStyle(name: string) {
   return vendorStyles[name] || vendorStyles['IngredientsOnline']
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatLogSummary(summary?: Record<string, string>): string {
+  if (!summary) return '—'
+
+  const processed = summary.processed || summary.total_products_scraped
+  const discovered = summary.discovered
+  const failed = summary.failed
+  const duration = summary.run_duration
+  const fullScrape = summary.full_scrape
+
+  const parts: string[] = []
+  if (processed) parts.push(`Processed ${processed}`)
+  if (discovered) parts.push(`Discovered ${discovered}`)
+  if (failed) parts.push(`Failed ${failed}`)
+  if (duration) parts.push(`Duration ${duration}`)
+  if (fullScrape) parts.push(`Full ${fullScrape}`)
+
+  return parts.length > 0 ? parts.join(' • ') : 'Summary unavailable'
 }
 
 // ============================================================================
@@ -342,6 +374,7 @@ function SummaryStatsBar({
 interface TerminalTab {
   vendorId: number
   vendorName: string
+  logFile?: string | null
   status: LogConnectionStatus
   logs: string[]
 }
@@ -404,7 +437,10 @@ function TerminalPanel({ tabs, activeTabId, onTabChange, onTabClose, onClear, on
               onClick={() => onTabChange(tab.vendorId)}
             >
               <span className={`w-2 h-2 rounded-full ${getStatusColor(tab.status)}`} />
-              <span className="text-xs font-medium">{tab.vendorName}</span>
+              <span className="text-xs font-medium">
+                {tab.vendorName}
+                {tab.logFile ? ' (History)' : ''}
+              </span>
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -427,10 +463,13 @@ function TerminalPanel({ tabs, activeTabId, onTabChange, onTabClose, onClear, on
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${getStatusColor(activeTab.status)}`} />
               <span className="text-xs text-slate-400">{getStatusText(activeTab.status)}</span>
+              {activeTab.logFile && (
+                <span className="text-xs text-slate-500">• {activeTab.logFile}</span>
+              )}
               <span className="text-xs text-slate-500">• {activeTab.logs.length} lines</span>
             </div>
             <div className="flex items-center gap-2">
-              {(activeTab.status === 'connected' || activeTab.status === 'connecting') && (
+              {!activeTab.logFile && (activeTab.status === 'connected' || activeTab.status === 'connecting') && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -487,10 +526,50 @@ function TerminalPanel({ tabs, activeTabId, onTabChange, onTabClose, onClear, on
 export function Admin() {
   const navigate = useNavigate()
   const [vendorFilter, setVendorFilter] = useState<number | undefined>(undefined)
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
 
   // Terminal state
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([])
   const [activeTabId, setActiveTabId] = useState<number | null>(null)
+
+  // Restore terminal tabs after reload so active runs/log sessions are recoverable.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TERMINAL_STORAGE_KEY)
+      if (!raw) return
+
+      const parsed = JSON.parse(raw) as {
+        activeTabId: number | null
+        tabs: Array<{ vendorId: number; vendorName: string; logFile?: string | null }>
+      }
+      if (!Array.isArray(parsed.tabs) || parsed.tabs.length === 0) return
+
+      setTerminalTabs(parsed.tabs.map((tab) => ({
+        vendorId: tab.vendorId,
+        vendorName: tab.vendorName,
+        logFile: tab.logFile ?? null,
+        status: 'connecting',
+        logs: [],
+      })))
+
+      const firstTabId = parsed.tabs[0]?.vendorId ?? null
+      setActiveTabId(parsed.activeTabId ?? firstTabId)
+    } catch {
+      // Ignore invalid persisted state.
+    }
+  }, [])
+
+  useEffect(() => {
+    const tabsForStorage = terminalTabs.map(tab => ({
+      vendorId: tab.vendorId,
+      vendorName: tab.vendorName,
+      logFile: tab.logFile ?? null,
+    }))
+    localStorage.setItem(TERMINAL_STORAGE_KEY, JSON.stringify({
+      activeTabId,
+      tabs: tabsForStorage,
+    }))
+  }, [terminalTabs, activeTabId])
 
   // Scraper mutations
   const queryClient = useQueryClient()
@@ -504,9 +583,16 @@ export function Admin() {
 
   // SSE log streams - we'll manage multiple connections
   const logStreams = VENDORS.map(v => {
-    const isTabOpen = terminalTabs.some(t => t.vendorId === v.id)
+    const tab = terminalTabs.find(t => t.vendorId === v.id)
+    const isTabOpen = !!tab
+    const selectedLogFile = tab?.logFile ?? null
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    return useScraperLogs(v.id, isTabOpen, () => handleScraperComplete(v.id))
+    return useScraperLogs(v.id, isTabOpen, () => handleScraperComplete(v.id), selectedLogFile)
+  })
+
+  const logHistoryQueries = VENDORS.map(v => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    return useScraperLogHistory(v.id, 8)
   })
 
   // Update terminal tabs when log data changes
@@ -545,24 +631,38 @@ export function Admin() {
     alertTypes: ['price_decrease_major', 'price_increase_major', 'stock_out', 'stale_variant', 'price_change', 'stock_change'],
     limit: 20,
   })
+  const { data: selectedRunData, isLoading: selectedRunLoading } = useScrapeRun(selectedRunId)
+  const { data: selectedRunAlerts, isLoading: selectedRunAlertsLoading } = useRunAlerts(selectedRunId)
 
-  const runs = runsData?.data || []
-  const alerts = alertsData?.data || []
+  const runs = runsData?.runs || []
+  const alerts = alertsData?.alerts || []
+  const selectedRunFromList = runs.find((run) => run.run_id === selectedRunId) || null
+  const selectedRun = selectedRunData || selectedRunFromList
+  const selectedRunAlertList = selectedRunAlerts || []
+  const recentLogFiles = VENDORS.flatMap((vendor, idx) => {
+    const logs = logHistoryQueries[idx].data || []
+    return logs.map(log => ({
+      vendorId: vendor.id,
+      vendorName: vendor.name,
+      ...log,
+    }))
+  }).sort((a, b) => new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime())
+  const logHistoryLoading = logHistoryQueries.some(q => q.isLoading)
 
   // Calculate summary stats
-  const totalRunsToday = runs.filter(r => {
+  const totalRunsToday = runs.filter((r: ScrapeRun) => {
     if (!r.started_at) return false
     const runDate = new Date(r.started_at)
     const today = new Date()
     return runDate.toDateString() === today.toDateString()
   }).length
 
-  const lastSuccessfulRun = runs.find(r => r.status === 'completed')?.completed_at || null
+  const lastSuccessfulRun = runs.find((r: ScrapeRun) => r.status === 'completed')?.completed_at || null
 
   // Get last run per vendor for scraper cards
   const vendorLastRuns: Record<number, string | null> = {}
   VENDORS.forEach(v => {
-    const lastRun = runs.find(r => r.vendor_id === v.id)
+    const lastRun = runs.find((r: ScrapeRun) => r.vendor_id === v.id)
     vendorLastRuns[v.id] = lastRun?.started_at || null
   })
 
@@ -578,10 +678,21 @@ export function Admin() {
             const existing = prev.find(t => t.vendorId === vendorId)
             if (existing) {
               // Clear existing logs and reconnect
-              return prev.map(t => t.vendorId === vendorId ? { ...t, logs: [], status: 'connecting' as LogConnectionStatus } : t)
+              return prev.map(t => t.vendorId === vendorId ? {
+                ...t,
+                logFile: null,
+                logs: [],
+                status: 'connecting' as LogConnectionStatus
+              } : t)
             }
             // Add new tab
-            return [...prev, { vendorId, vendorName, status: 'connecting' as LogConnectionStatus, logs: [] }]
+            return [...prev, {
+              vendorId,
+              vendorName,
+              logFile: null,
+              status: 'connecting' as LogConnectionStatus,
+              logs: []
+            }]
           })
           setActiveTabId(vendorId)
         }
@@ -604,6 +715,43 @@ export function Admin() {
 
   const handleStop = (vendorId: number) => {
     stopMutation.mutate(vendorId)
+  }
+
+  const handleOpenLog = (vendorId: number, vendorName: string, filename: string) => {
+    setTerminalTabs(prev => {
+      const existing = prev.find(t => t.vendorId === vendorId)
+      if (existing) {
+        return prev.map(t => t.vendorId === vendorId ? {
+          ...t,
+          logFile: filename,
+          logs: [],
+          status: 'connecting' as LogConnectionStatus
+        } : t)
+      }
+      return [...prev, {
+        vendorId,
+        vendorName,
+        logFile: filename,
+        status: 'connecting' as LogConnectionStatus,
+        logs: []
+      }]
+    })
+    setActiveTabId(vendorId)
+  }
+
+  const handleOpenAlertProduct = (alert: { ingredient_id?: number | null; sku?: string | null; product_name?: string | null }) => {
+    const ingredientId = alert.ingredient_id
+    if (ingredientId) {
+      setSelectedRunId(null)
+      navigate(`/products/${ingredientId}`)
+      return
+    }
+
+    const term = alert.sku || alert.product_name
+    if (term) {
+      setSelectedRunId(null)
+      navigate(`/products?search=${encodeURIComponent(term)}`)
+    }
   }
 
   // Status badge colors for light theme
@@ -672,10 +820,95 @@ export function Admin() {
         />
       )}
 
+      {/* Log History */}
+      <Card className="bg-white border-slate-200 shadow-sm overflow-hidden">
+        <CardHeader className="pb-3 border-b border-slate-100">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-900">Log History</h3>
+            <span className="text-xs text-slate-500">Open old logs and review run summaries</span>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-slate-100 hover:bg-transparent">
+                <TableHead className="text-xs text-slate-500">Vendor</TableHead>
+                <TableHead className="text-xs text-slate-500">File</TableHead>
+                <TableHead className="text-xs text-slate-500">Updated</TableHead>
+                <TableHead className="text-xs text-slate-500">Size</TableHead>
+                <TableHead className="text-xs text-slate-500">Summary</TableHead>
+                <TableHead className="text-xs text-slate-500 w-24">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logHistoryLoading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <TableRow key={i} className="border-slate-100">
+                    <TableCell colSpan={6}>
+                      <div className="h-8 bg-slate-100 rounded animate-pulse" />
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : recentLogFiles.length === 0 ? (
+                <TableRow className="border-slate-100 hover:bg-transparent">
+                  <TableCell colSpan={6} className="py-8 text-center text-sm text-slate-500">
+                    No log files found yet
+                  </TableCell>
+                </TableRow>
+              ) : (
+                recentLogFiles.slice(0, 16).map((log) => {
+                  const style = getVendorStyle(log.vendorName)
+                  return (
+                    <TableRow key={`${log.vendorId}-${log.filename}`} className="border-slate-100 hover:bg-slate-50">
+                      <TableCell>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs border ${style.badgeBg} ${style.badgeText} ${style.border}`}>
+                          {log.vendorName}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-slate-700">{log.filename}</span>
+                          {log.is_active && (
+                            <Badge className="text-[10px] bg-green-100 text-green-700 border-green-200 border">
+                              Active
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-500">
+                        {formatRelativeTime(log.modified_at)}
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-500">
+                        {formatFileSize(log.size_bytes)}
+                      </TableCell>
+                      <TableCell className="text-xs text-slate-600 max-w-[360px]">
+                        <span className="truncate block" title={formatLogSummary(log.summary)}>
+                          {formatLogSummary(log.summary)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleOpenLog(log.vendorId, log.vendorName, log.filename)}
+                          className="h-6 px-2 text-xs text-slate-600 hover:text-slate-900"
+                        >
+                          Open
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
       {/* Summary Stats Bar */}
       <SummaryStatsBar
         totalRuns={totalRunsToday}
-        activeAlerts={alerts.length}
+        activeAlerts={alertsData?.total ?? alerts.length}
         lastSuccessfulRun={lastSuccessfulRun}
       />
 
@@ -722,20 +955,21 @@ export function Admin() {
                 <TableHead className="text-xs text-slate-500">Alerts</TableHead>
                 <TableHead className="text-xs text-slate-500">Duration</TableHead>
                 <TableHead className="text-xs text-slate-500">Started</TableHead>
+                <TableHead className="text-xs text-slate-500 w-24">Details</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {runsLoading ? (
                 Array.from({ length: 3 }).map((_, i) => (
                   <TableRow key={i} className="border-slate-100">
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <div className="h-8 bg-slate-100 rounded animate-pulse" />
                     </TableCell>
                   </TableRow>
                 ))
               ) : runs.length === 0 ? (
                 <TableRow className="border-slate-100 hover:bg-transparent">
-                  <TableCell colSpan={6} className="py-12">
+                  <TableCell colSpan={7} className="py-12">
                     <div className="flex flex-col items-center gap-3 text-center">
                       <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center">
                         <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -756,6 +990,10 @@ export function Admin() {
                 runs.map((run) => {
                   const vendorName = run.vendor_name || VENDORS.find(v => v.id === run.vendor_id)?.name || 'Unknown'
                   const style = getVendorStyle(vendorName)
+                  const productsProcessed = run.products_processed ?? run.products_discovered ?? 0
+                  const productsDiscovered = run.products_discovered ?? productsProcessed
+                  const variantsNew = run.variants_new ?? 0
+                  const runAlerts = (run.price_alerts ?? 0) + (run.stock_alerts ?? 0) + (run.data_quality_alerts ?? 0)
 
                   return (
                     <TableRow key={run.run_id} className="border-slate-100 hover:bg-slate-50">
@@ -773,13 +1011,15 @@ export function Admin() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-slate-700">
-                        {run.products_scraped || run.products_updated || 0}
+                        {productsProcessed}
                         <span className="text-slate-400"> / </span>
-                        <span className="text-slate-500">{run.products_new || 0} new</span>
+                        <span className="text-slate-500">{productsDiscovered} discovered</span>
+                        <span className="text-slate-400"> • </span>
+                        <span className="text-slate-500">{variantsNew} new variants</span>
                       </TableCell>
                       <TableCell>
-                        <span className={`text-sm ${(run.errors_count || 0) > 0 ? 'text-red-600' : 'text-slate-500'}`}>
-                          {run.errors_count || 0}
+                        <span className={`text-sm ${runAlerts > 0 ? 'text-amber-600' : 'text-slate-500'}`}>
+                          {runAlerts}
                         </span>
                       </TableCell>
                       <TableCell className="text-sm text-slate-600">
@@ -787,6 +1027,16 @@ export function Admin() {
                       </TableCell>
                       <TableCell className="text-sm text-slate-500">
                         {formatRelativeTime(run.started_at)}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedRunId(run.run_id)}
+                          className="h-6 px-2 text-xs text-slate-600 hover:text-slate-900"
+                        >
+                          View
+                        </Button>
                       </TableCell>
                     </TableRow>
                   )
@@ -796,6 +1046,181 @@ export function Admin() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Run Details Dialog */}
+      <Dialog
+        open={selectedRunId !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRunId(null)
+        }}
+      >
+        <DialogContent className="bg-white border-slate-200 max-w-5xl">
+          <DialogHeader>
+            <DialogTitle className="text-slate-900">
+              Run Details
+              {selectedRunId ? ` #${selectedRunId}` : ''}
+            </DialogTitle>
+            <DialogDescription className="text-slate-500">
+              Review metrics and alerts from this scraper run.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!selectedRun && selectedRunLoading ? (
+            <div className="space-y-3 pt-2">
+              <div className="h-16 bg-slate-100 rounded animate-pulse" />
+              <div className="h-48 bg-slate-100 rounded animate-pulse" />
+            </div>
+          ) : !selectedRun ? (
+            <div className="text-sm text-slate-500 py-8 text-center">
+              Run details unavailable.
+            </div>
+          ) : (
+            <div className="space-y-4 pt-2">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-1">Status</p>
+                  <Badge className={`text-xs border ${getStatusBadgeClass(selectedRun.status || 'unknown')}`}>
+                    {selectedRun.status || 'unknown'}
+                  </Badge>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-1">Started</p>
+                  <p className="text-sm text-slate-800">{formatDateTime(selectedRun.started_at)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-1">Completed</p>
+                  <p className="text-sm text-slate-800">{formatDateTime(selectedRun.completed_at)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-1">Duration</p>
+                  <p className="text-sm text-slate-800">{formatDuration(selectedRun.started_at, selectedRun.completed_at)}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-2">Products</p>
+                  <div className="text-xs text-slate-700 space-y-1">
+                    <p>Discovered: {selectedRun.products_discovered ?? 0}</p>
+                    <p>Processed: {selectedRun.products_processed ?? 0}</p>
+                    <p>Skipped: {selectedRun.products_skipped ?? 0}</p>
+                    <p>Failed: {selectedRun.products_failed ?? 0}</p>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-2">Variants</p>
+                  <div className="text-xs text-slate-700 space-y-1">
+                    <p>New: {selectedRun.variants_new ?? 0}</p>
+                    <p>Updated: {selectedRun.variants_updated ?? 0}</p>
+                    <p>Unchanged: {selectedRun.variants_unchanged ?? 0}</p>
+                    <p>Stale: {selectedRun.variants_stale ?? 0}</p>
+                    <p>Reactivated: {selectedRun.variants_reactivated ?? 0}</p>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs text-slate-500 mb-2">Run Config + Alerts</p>
+                  <div className="text-xs text-slate-700 space-y-1">
+                    <p>Full Scrape: {selectedRun.is_full_scrape === false ? 'No' : 'Yes'}</p>
+                    <p>Max Products: {selectedRun.max_products_limit ?? 'Unlimited'}</p>
+                    <p>Price Alerts: {selectedRun.price_alerts ?? 0}</p>
+                    <p>Stock Alerts: {selectedRun.stock_alerts ?? 0}</p>
+                    <p>Data Quality Alerts: {selectedRun.data_quality_alerts ?? 0}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 overflow-hidden">
+                <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-800">Run Alerts</p>
+                  <span className="text-xs text-slate-500">
+                    {selectedRunAlertsLoading ? 'Loading...' : `${selectedRunAlertList.length} alerts`}
+                  </span>
+                </div>
+
+                {selectedRunAlertsLoading ? (
+                  <div className="p-3">
+                    <div className="h-12 bg-slate-100 rounded animate-pulse" />
+                  </div>
+                ) : selectedRunAlertList.length === 0 ? (
+                  <div className="p-4 text-sm text-slate-500 text-center">
+                    No alerts recorded for this run.
+                  </div>
+                ) : (
+                  <div className="max-h-64 overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-slate-100 hover:bg-transparent">
+                          <TableHead className="text-xs text-slate-500 w-24">Severity</TableHead>
+                          <TableHead className="text-xs text-slate-500 w-32">Type</TableHead>
+                          <TableHead className="text-xs text-slate-500">Product</TableHead>
+                          <TableHead className="text-xs text-slate-500">Message</TableHead>
+                          <TableHead className="text-xs text-slate-500 w-28">Actions</TableHead>
+                          <TableHead className="text-xs text-slate-500 w-20">When</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedRunAlertList.map((alert) => {
+                          const typeConfig = alertTypeConfig[alert.alert_type] || { label: alert.alert_type, icon: '•', color: 'text-slate-500' }
+                          const severityStyle = severityStyles[alert.severity] || severityStyles.info
+
+                          return (
+                            <TableRow key={alert.alert_id} className="border-slate-100">
+                              <TableCell>
+                                <Badge className={`text-xs border ${severityStyle}`}>
+                                  {alert.severity}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`${typeConfig.color} text-sm`}>{typeConfig.icon}</span>
+                                  <span className="text-xs text-slate-700">{typeConfig.label}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-sm text-slate-700">
+                                {alert.product_name || alert.sku || '—'}
+                              </TableCell>
+                              <TableCell className="text-sm text-slate-600">
+                                {alert.message}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-1">
+                                  {(alert.ingredient_id || alert.sku || alert.product_name) && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleOpenAlertProduct(alert)}
+                                      className="h-6 px-2 text-xs text-slate-600 hover:text-slate-900"
+                                    >
+                                      Product
+                                    </Button>
+                                  )}
+                                  {alert.product_url && (
+                                    <a
+                                      href={alert.product_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center h-6 px-2 text-xs text-blue-600 hover:text-blue-700"
+                                    >
+                                      Source ↗
+                                    </a>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-xs text-slate-500">
+                                {formatRelativeTime(alert.created_at)}
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Actionable Alerts */}
       <Card className="bg-white border-slate-200 shadow-sm overflow-hidden">

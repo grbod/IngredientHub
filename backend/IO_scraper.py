@@ -429,13 +429,13 @@ DbConnection = Union['psycopg2.connection', 'sqlite3.Connection'] if HAS_POSTGRE
 def get_postgres_url() -> Optional[str]:
     """Get PostgreSQL connection URL from environment."""
     load_env_file()
-    return os.environ.get('SUPABASE_DB_URL')
+    return os.environ.get('DATABASE_URL')
 
 
 def init_database(db_path: str = None) -> DbConnection:
     """
     Initialize database with schema and seed data.
-    Uses PostgreSQL (Supabase) if available, falls back to SQLite.
+    Uses PostgreSQL if available, falls back to SQLite.
     """
     # Try PostgreSQL first
     postgres_url = get_postgres_url()
@@ -446,7 +446,7 @@ def init_database(db_path: str = None) -> DbConnection:
         if not HAS_POSTGRES:
             print("  (psycopg2 not installed, using SQLite)")
         elif not postgres_url:
-            print("  (SUPABASE_DB_URL not set, using SQLite)")
+            print("  (DATABASE_URL not set, using SQLite)")
         return init_sqlite_database(db_path or DATABASE_FILE)
 
 
