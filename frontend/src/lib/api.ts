@@ -201,11 +201,12 @@ async function fetchApi<T>(
   })
 
   if (!response.ok) {
+    const text = await response.text()
     let errorData: unknown
     try {
-      errorData = await response.json()
+      errorData = JSON.parse(text)
     } catch {
-      errorData = await response.text()
+      errorData = text
     }
     throw new ApiError(
       `API request failed: ${response.statusText}`,
